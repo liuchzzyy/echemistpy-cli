@@ -1,0 +1,17 @@
+abstract: 'echemistpy is a unified data processing framework for electrochemistry
+  and materials characterization with Python.'
+authors:
+- affiliation: Institute of Materials Science of Barcelona (ICMAB-CSIC), Universitat Autònoma de Barcelona, Barcelona, Spain. 
+  email: liuchzzyy@gmail.com
+  family-names: Liu
+  given-names: Cheng
+  orcid: https://orcid.org/0000-0001-8967-1174
+cff-version: 1.2.0
+date-released: '2025-12-15'
+license: CECILL-B
+message: If you use this software, please cite it using the metadata from this file.
+repository-code: https://github.com/liuchzzyy/echemistpy
+title: echemistpy: unified data processing for electrochemistry and materials characterization
+type: software
+url: https://github.com/liuchzzyy/echemistpy
+version: 0.1.0

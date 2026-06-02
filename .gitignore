@@ -1,0 +1,56 @@
+# === echemistpy .gitignore ===
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual Environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Testing & Coverage
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+.hypothesis/
+.nox/
+.tox/
+htmlcov/
+coverage.xml
+nosetests.xml
+
+# IDEs & Editors
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Project Specific
+.ruff_cache/
+.benchmarks/
+.claude/
+
+# Data & Documentation
+# docs/* (Completely remove the wildcard ignore)
+# !docs/static/
+
+# 忽略临时或大容量构建文档（如果存在）
+docs/_build/
+docs/api/generated/
+docs/examples/
+
+
+Thumbs.db
+desktop.ini

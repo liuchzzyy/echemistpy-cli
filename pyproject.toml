@@ -1,0 +1,139 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]
+
+[project]
+name = "echemistpy"
+version = "0.1.0"
+description = "Unified data processing for electrochemical techniques and materials characterization (XRD, XPS, TGA, XAS, TXM)"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = {text = "CeCILL-B Free Software License Agreement (CECILL-B)"}
+authors = [
+  {name = "Cheng Liu", email = "liuchzzyy@gmail.com"},
+]
+keywords = ["electrochemistry", "materials characterization", "data analysis"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: CeCILL-B Free Software License Agreement (CECILL-B)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  # Data Handling
+  "xarray>=2025.6.1",
+  "numpy>=2.2.6",
+  "pandas>=2.2.3",
+  "h5netcdf>=1.6.3",
+  # Scientific computing
+  "scipy>=1.15.3",
+  "matplotlib>=3.10.3",
+  "scikit-image>=0.22.0",
+  "scikit-learn>=1.4.0",
+  "umap-learn>=0.5.5",
+  "numba>=0.57.0", # Ensure python 3.11 compatibility
+  "lmfit>=1.2.2",
+  "xraylarch>=0.9.78", # XAS Analysis
+  # File formats
+  "openpyxl>=3.1.5",  # Excel files
+  # Development tools
+  "ruff>=0.12.4",
+  "pluggy>=1.0.0",
+  "traitlets>=5.11.1",
+  "ty>=0.0.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "pre-commit",
+  "pytest",
+  "pytest-cov",
+  "echemistpy[interactive]",
+  "echemistpy[docs]",
+]
+test = [
+  "pytest",
+  "pytest-cov",
+  "pytest-mock",
+  "pytest-benchmark",
+]
+
+[project.urls]
+homepage = "https://github.com/liuchzzyy/echemistpy"
+repository = "https://github.com/liuchzzyy/echemistpy"
+issues = "https://github.com/liuchzzyy/echemistpy/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"echemistpy" = ["*.pyi"]
+"echemistpy.data" = ["*.json", "*.yaml"]
+
+[tool.ruff]
+line-length = 200
+preview = true
+
+[tool.ruff.lint]
+select = [
+  # Pyflakes
+  "F", # Pyflakes rules (F821 checks undefined names)
+
+  # Pycodestyle
+  "E", # Error-level PEP 8 rules
+  "W", # Warning-level PEP 8 rules
+
+  # flake8 plugins
+  "G",   # flake8-logging-format rules
+  "B",   # flake8-bugbear rules
+  "C4",  # flake8-comprehensions rules
+  "N",   # pep8-naming rules
+  "SIM", # flake8-simplify rules
+  "ARG", # flake8-unused-arguments
+  "ERA", # eradicate (commented out code)
+  "PL",  # pylint rules
+  "RUF", # Ruff-specific rules
+
+  # Security
+  "S", # flake8-bandit (security)
+]
+extend-select = ["I"] # isort
+ignore = ["E501", "PLR2004", "ERA001", "RUF001", "RUF002", "RUF003"]  # RUF002/003: 允许中文文档中的中文标点符号
+
+# Logger objects that should be checked
+logger-objects = ["app.logger", "logger"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*" = [
+  "S101", # Use of assert detected
+  "ARG", # Unused function args in tests
+]
+
+[tool.pytest.ini_options]
+addopts = ["--doctest-modules", "-p no:warnings"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["src/echemistpy/"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "def __repr__",
+]
+ignore_errors = true
