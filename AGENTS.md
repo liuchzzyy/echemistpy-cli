@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -59,6 +59,32 @@ For multi-step tasks, state a brief plan:
 ```
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+## 5. Commit Hygiene
+
+**Commit messages must be structured, specific, and reviewable.**
+
+When creating commits:
+- Use a standard subject line format: `type(scope): short summary`
+- Prefer conventional types such as `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
+- Write the subject line in Chinese
+- Keep the first line focused on the main change, not a vague summary like "update files"
+- Add multiple `-m` flags to describe each distinct change you made
+- Each extra `-m` message should describe one concrete item in Chinese, preferably starting with `- `
+
+Example:
+```bash
+git commit \
+  -m "fix(io): 规范化 xas 加载器元数据" \
+  -m "- 移除 CLAESS 读取器中错误的能量单位回退逻辑" \
+  -m "- 补充缺失元数据字段的回归测试" \
+  -m "- 更新文档示例以匹配新的加载结果"
+```
+
+The test:
+- A reviewer should understand what changed from the commit message alone
+- Distinct changes in one commit should be visible as distinct `-m` entries
+- The subject line and each extra `-m` entry should be written in Chinese
 
 ---
 
