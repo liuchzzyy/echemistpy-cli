@@ -37,3 +37,4 @@ desktop.ini
 # Documentation build artifacts
 docs/_build/
 docs/api/generated/
+echemistpy-cli/Samples/
