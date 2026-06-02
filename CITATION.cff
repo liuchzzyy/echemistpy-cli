@@ -1,4 +1,4 @@
-abstract: 'echemistpy is a unified data processing framework for electrochemistry
+abstract: 'echemistpy-cli is a unified data processing framework for electrochemistry
   and materials characterization with Python.'
 authors:
 - affiliation: Institute of Materials Science of Barcelona (ICMAB-CSIC), Universitat Autònoma de Barcelona, Barcelona, Spain. 
@@ -10,8 +10,8 @@ cff-version: 1.2.0
 date-released: '2025-12-15'
 license: CECILL-B
 message: If you use this software, please cite it using the metadata from this file.
-repository-code: https://github.com/liuchzzyy/echemistpy
-title: echemistpy: unified data processing for electrochemistry and materials characterization
+repository-code: https://github.com/liuchzzyy/echemistpy-cli
+title: echemistpy-cli: unified data processing for electrochemistry and materials characterization
 type: software
-url: https://github.com/liuchzzyy/echemistpy
+url: https://github.com/liuchzzyy/echemistpy-cli
 version: 0.1.0

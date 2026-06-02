@@ -3,7 +3,7 @@ build-backend = "setuptools.build_meta"
 requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]
 
 [project]
-name = "echemistpy"
+name = "echemistpy-cli"
 version = "0.1.0"
 description = "Unified data processing for electrochemical techniques and materials characterization (XRD, XPS, TGA, XAS, TXM)"
 readme = "README.md"
@@ -54,8 +54,8 @@ dev = [
   "pre-commit",
   "pytest",
   "pytest-cov",
-  "echemistpy[interactive]",
-  "echemistpy[docs]",
+  "echemistpy-cli[interactive]",
+  "echemistpy-cli[docs]",
 ]
 test = [
   "pytest",
@@ -65,9 +65,9 @@ test = [
 ]
 
 [project.urls]
-homepage = "https://github.com/liuchzzyy/echemistpy"
-repository = "https://github.com/liuchzzyy/echemistpy"
-issues = "https://github.com/liuchzzyy/echemistpy/issues"
+homepage = "https://github.com/liuchzzyy/echemistpy-cli"
+repository = "https://github.com/liuchzzyy/echemistpy-cli"
+issues = "https://github.com/liuchzzyy/echemistpy-cli/issues"
 
 [tool.setuptools]
 include-package-data = true

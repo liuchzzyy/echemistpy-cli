@@ -1,8 +1,10 @@
-# echemistpy
+# echemistpy-cli
 
 **电化学与材料表征的统一数据处理框架**
 
-echemistpy 旨在为电化学（Electrochemistry）和材料表征（XAS, STXM 等）数据提供一个统一、标准化且可扩展的处理接口。它利用 `xarray` 的强大功能来处理多维数据，并结合 `traitlets` 实现严格的元数据管理。
+echemistpy-cli 旨在为电化学（Electrochemistry）和材料表征（XAS, STXM 等）数据提供一个统一、标准化且可扩展的处理接口。它利用 `xarray` 的强大功能来处理多维数据，并结合 `traitlets` 实现严格的元数据管理。
+
+发行名使用 `echemistpy-cli`，Python 导入名保持为 `echemistpy`。
 
 ## 🌟 核心特性
 

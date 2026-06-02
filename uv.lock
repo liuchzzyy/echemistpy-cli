@@ -460,7 +460,7 @@ wheels = [
 ]
 
 [[package]]
-name = "echemistpy"
+name = "echemistpy-cli"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -505,8 +505,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "echemistpy", extras = ["docs"], marker = "extra == 'dev'" },
-    { name = "echemistpy", extras = ["interactive"], marker = "extra == 'dev'" },
+    { name = "echemistpy-cli", extras = ["docs"], marker = "extra == 'dev'" },
+    { name = "echemistpy-cli", extras = ["interactive"], marker = "extra == 'dev'" },
     { name = "h5netcdf", specifier = ">=1.6.3" },
     { name = "lmfit", specifier = ">=1.2.2" },
     { name = "matplotlib", specifier = ">=3.10.3" },
