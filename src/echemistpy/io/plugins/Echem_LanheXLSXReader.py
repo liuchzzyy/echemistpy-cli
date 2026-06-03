@@ -17,7 +17,7 @@ import pandas as pd
 import xarray as xr
 
 from echemistpy.io.base_reader import BaseReader
-from echemistpy.io.reader_utils import merge_infos
+from echemistpy.io.reader_utils import merge_infos, sanitize_variable_names
 from echemistpy.io.structures import RawData, RawDataInfo
 
 logger = logging.getLogger(__name__)
@@ -31,18 +31,38 @@ class LanheXLSXReader(BaseReader):
     """
 
     # --- Constants for better maintainability ---
-    ORDERED_COLUMNS: ClassVar[list[str]] = [
+    MEASUREMENT_COLUMNS: ClassVar[list[str]] = [
         "Record",
-        "SysTime",
         "Cycle",
+        "Step",
+        "WorkMode",
+        "StepInProcess",
+        "StepDuration",
+        "StepTime",
         "TestTime",
+        "SysTime",
         "Voltage/V",
         "Current/uA",
         "Capacity/uAh",
         "SpeCap/mAh/g",
         "SpeCap_cal/mAh/g",
+        "Energy/uWh",
+        "SpeEnergy/mWh/g",
+        "Power/uW",
         "dQdV/uAh/V",
         "dVdQ/V/uAh",
+        "Temperature/℃",
+        "Humidity/%",
+        "Mark1",
+        "Mark2",
+        "BatteryCode",
+        "DataFile",
+        "TestName",
+        "ProcessName",
+        "Thicknessmm",
+        "ThicknessPressureg",
+        "ThicknessTemp℃",
+        "ChannelNumber",
     ]
 
     METADATA_MAPPING: ClassVar[dict[str, str]] = {
@@ -54,6 +74,34 @@ class LanheXLSXReader(BaseReader):
     }
 
     INDEX_COLUMNS: ClassVar[list[str]] = ["Record", "record", "Row", "row", "Index", "index"]
+    TEXT_COLUMNS: ClassVar[set[str]] = {
+        "BatteryCode",
+        "Channel",
+        "ChannelNumber",
+        "DataFile",
+        "Dev SN",
+        "File name",
+        "Log Details",
+        "Log Type",
+        "Mark1",
+        "Mark2",
+        "Path",
+        "Process",
+        "ProcessName",
+        "Range",
+        "Serial number",
+        "StepInProcess",
+        "Test name",
+        "TestName",
+        "WorkMode",
+    }
+    DATA_COLUMN_RENAMES: ClassVar[dict[str, str]] = {
+        "StepDuration": "StepDuration_s",
+        "StepTime": "StepTime_s",
+        "TestTime": "TestTime_s",
+    }
+    MASS_REGEX: ClassVar[re.Pattern[str]] = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(mg|g|ug|µg)", re.IGNORECASE)
+    NUMERIC_REGEX: ClassVar[re.Pattern[str]] = re.compile(r"^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
 
     # --- Loader Metadata ---
     supports_directories: ClassVar[bool] = True
@@ -112,13 +160,17 @@ class LanheXLSXReader(BaseReader):
         Returns:
             xarray Dataset
         """
-        ds = xr.Dataset({k: (("record",), v) for k, v in data.items()})
+        data_vars = {LanheXLSXReader._dataset_column_name(k): (("record",), v) for k, v in data.items() if not k.startswith("_") and not LanheXLSXReader._all_missing(v)}
+        if not data_vars:
+            raise ValueError("No LANHE measurement records found in XLSX export.")
 
-        # Sanitize variable names (replace / with _)
-        rename_dict = {str(var): str(var).replace("/", "_") for var in ds.data_vars if "/" in str(var)}
-        if rename_dict:
-            ds = ds.rename(rename_dict)
+        ds = xr.Dataset(data_vars)
+        ds = sanitize_variable_names(ds)
+        if not isinstance(ds, xr.Dataset):
+            raise TypeError("Expected sanitized LANHE data to remain an xarray.Dataset.")
 
+        source_columns = data.get("_metadata", {}).get("columns", [])
+        ds.attrs["source_columns"] = [str(c) for c in source_columns]
         return ds
 
     @staticmethod
@@ -134,18 +186,16 @@ class LanheXLSXReader(BaseReader):
         systime_key = "SysTime" if "SysTime" in ds else "SysTime".replace("/", "_")
 
         if systime_key in ds:
-            try:
-                systimes = pd.to_datetime(ds[systime_key].values)
-                ds = ds.assign_coords(systime=(("record",), systimes))
-                ds = ds.drop_vars(systime_key)
+            ds = LanheXLSXReader._assign_systime_coord(ds, systime_key)
 
-                # Calculate relative time in seconds
-                rel_times = (systimes - systimes[0]).total_seconds()
-                ds = ds.assign_coords(time_s=(("record",), rel_times))
-                ds.time_s.attrs.update({"units": "s", "long_name": "Relative Time"})
-                ds.systime.attrs.update({"long_name": "System Time"})
-            except Exception as e:
-                logger.warning("Failed to process time coordinates: %s", e)
+        test_time_key = "TestTime_s" if "TestTime_s" in ds else "TestTime"
+        if test_time_key in ds:
+            ds = LanheXLSXReader._assign_time_coord_from_column(ds, test_time_key)
+        elif "systime" in ds.coords:
+            systimes = pd.to_datetime(ds.coords["systime"].values)
+            rel_times = (systimes - systimes[0]).total_seconds()
+            ds = ds.assign_coords(time_s=(("record",), rel_times))
+            ds.time_s.attrs.update({"units": "s", "long_name": "Relative Time"})
 
         return ds
 
@@ -182,7 +232,6 @@ class LanheXLSXReader(BaseReader):
         Returns:
             RawDataInfo object
         """
-        path = Path(metadata.get("file_path", ""))
         mass = metadata.get("active_material_mass")
         start_time_val = self.start_time or metadata.get("start_time")
         if isinstance(start_time_val, datetime):
@@ -266,17 +315,32 @@ class LanheXLSXReader(BaseReader):
         # Use read_only for memory efficiency
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
         try:
-            self._read_test_info(wb, metadata)
-            self._read_proc_info(wb, metadata)
-            self._read_log_info(wb, metadata)
-
-            if data_sheet_name := self._find_data_sheet(wb):
-                data_dict = self._read_record_data_from_ws(wb[data_sheet_name], data_sheet_name)
-            else:
-                logger.warning("No data sheet (DefaultGroup) found in %s", filepath)
+            metadata, data_dict = self._read_workbook(wb, filepath)
         finally:
             wb.close()
 
+        return metadata, data_dict
+
+    def _read_workbook(self, wb: openpyxl.Workbook, filepath: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Read LANHE workbook metadata sheets and channel data sheet."""
+        metadata: dict[str, Any] = {}
+        self._read_test_info(wb, metadata)
+        self._read_proc_info(wb, metadata)
+        self._read_log_info(wb, metadata)
+
+        data_sheet_name = self._find_data_sheet(wb)
+        if data_sheet_name is None:
+            logger.warning("No LANHE channel data sheet found in %s", filepath)
+            return metadata, {}
+
+        data_dict = self._read_record_data_from_ws(wb[data_sheet_name], data_sheet_name)
+        sheet_metadata = data_dict.get("_metadata", {})
+        if sheet_metadata:
+            metadata["Channel_Data"] = sheet_metadata
+        if cycle_summaries := sheet_metadata.get("cycle_summaries"):
+            metadata["Cycle_Summary"] = cycle_summaries
+        if step_summaries := sheet_metadata.get("step_summaries"):
+            metadata["Step_Summary"] = step_summaries
         return metadata, data_dict
 
     def _read_record_data_from_ws(self, ws: openpyxl.worksheet.worksheet.Worksheet, sheet_name: str) -> dict[str, Any]:
@@ -289,33 +353,49 @@ class LanheXLSXReader(BaseReader):
         Returns:
             Dictionary with column data
         """
-        header: list[str] | None = None
+        header_pairs: list[tuple[int, str]] | None = None
+        cycle_header_pairs: list[tuple[int, str]] | None = None
+        step_header_pairs: list[tuple[int, str]] | None = None
         rows: list[tuple[Any, ...]] = []
+        cycle_summaries: list[dict[str, Any]] = []
+        step_summaries: list[dict[str, Any]] = []
 
         for row in ws.iter_rows(values_only=True):
-            if not row or row[0] is None:
+            if self._is_empty_row(row):
                 continue
 
-            # 1. Header Detection
-            if not header:
-                row_str = " ".join(str(c).lower() for c in row[:10] if c)
-                if "cycle" in row_str and "step" in row_str:
-                    header = [str(c).strip() for c in row if c and str(c).strip()]
+            row_headers = self._header_values(row)
+            if self._is_measurement_header(row_headers):
+                header_pairs = self._header_pairs(row)
+                continue
+            if self._is_step_summary_header(row_headers):
+                step_header_pairs = self._header_pairs(row)
+                continue
+            if self._is_cycle_summary_header(row_headers):
+                cycle_header_pairs = self._header_pairs(row)
                 continue
 
-            # 2. Data Row Validation (First 3 columns should be numeric)
-            try:
-                [int(c) for c in row[:3]]
+            if header_pairs and self._is_measurement_row(row):
                 rows.append(row)
-            except (ValueError, TypeError):
+                continue
+            if step_header_pairs and self._is_step_summary_row(row):
+                step_summaries.append(self._row_to_dict(row, step_header_pairs))
+                continue
+            if cycle_header_pairs and self._is_cycle_summary_row(row):
+                cycle_summaries.append(self._row_to_dict(row, cycle_header_pairs))
                 continue
 
-        if not (header and rows):
+        if not (header_pairs and rows):
             return {}
 
-        # 3. Data Conversion
-        data = {h: [self._convert_time(r[i]) if i < len(r) else None for r in rows] for i, h in enumerate(header)}
-        data["_metadata"] = {"sheet_name": sheet_name, "num_rows": len(rows), "columns": header}
+        data = {header: [self._convert_cell_value(row[col_idx], header) if col_idx < len(row) else None for row in rows] for col_idx, header in header_pairs}
+        data["_metadata"] = {
+            "sheet_name": sheet_name,
+            "num_rows": len(rows),
+            "columns": [header for _, header in header_pairs],
+            "cycle_summaries": cycle_summaries,
+            "step_summaries": step_summaries,
+        }
         return data
 
     def _read_test_info(self, wb: openpyxl.Workbook, metadata: dict[str, Any]) -> None:
@@ -325,14 +405,13 @@ class LanheXLSXReader(BaseReader):
             wb: openpyxl Workbook object
             metadata: Metadata dictionary to update
         """
-        if "Test information" in wb.sheetnames:
-            try:
-                ws = wb["Test information"]
-                headers = [str(cell.value) for cell in ws[1] if cell.value]
-                if ws.max_row >= 2:
-                    metadata["Test_Information"] = {h: self._convert_time(ws[2][i].value) for i, h in enumerate(headers) if i < len(ws[2])}
-            except Exception as e:
-                logger.debug("Error reading Test Information: %s", e)
+        if "Test information" not in wb.sheetnames:
+            return
+
+        ws = wb["Test information"]
+        headers = [str(cell.value).strip() for cell in ws[1] if cell.value]
+        if ws.max_row >= 2:
+            metadata["Test_Information"] = {h: self._convert_cell_value(ws[2][i].value, h) for i, h in enumerate(headers) if i < len(ws[2])}
 
     def _read_proc_info(self, wb: openpyxl.Workbook, metadata: dict[str, Any]) -> None:
         """Read 'Ch1_Proc' sheet and extract Work Mode table.
@@ -343,29 +422,25 @@ class LanheXLSXReader(BaseReader):
         """
         if "Ch1_Proc" not in wb.sheetnames:
             return
-        try:
-            ws = wb["Ch1_Proc"]
-            proc_info: dict[str, Any] = {}
-            work_mode: list[dict[str, Any]] = []
-            headers: list[str] | None = None
+        ws = wb["Ch1_Proc"]
+        proc_info: dict[str, Any] = {}
+        work_mode: list[dict[str, Any]] = []
+        headers: list[str] | None = None
 
-            for row in ws.iter_rows(values_only=True):
-                if not row[0]:
-                    continue
-                if str(row[0]) == "Order":
-                    headers = [str(c) for c in row if c]
-                elif headers:
-                    if not str(row[0]).strip():
-                        break
-                    work_mode.append({h: self._convert_time(row[i]) for i, h in enumerate(headers) if i < len(row)})
-                elif row[1]:
-                    proc_info[str(row[0])] = self._convert_time(row[1])
+        for row in ws.iter_rows(values_only=True):
+            if self._is_empty_row(row) or row[0] is None:
+                continue
+            first_cell = str(row[0]).strip()
+            if first_cell == "Order":
+                headers = [str(c).strip() for c in row if c not in {None, ""}]
+            elif headers:
+                work_mode.append({h: self._convert_cell_value(row[i], h) for i, h in enumerate(headers) if i < len(row)})
+            elif len(row) > 1 and row[1] is not None:
+                proc_info[first_cell] = self._convert_cell_value(row[1], first_cell)
 
-            if work_mode:
-                proc_info["Work_Mode"] = work_mode
-            metadata["Channel_Process_Info"] = proc_info
-        except Exception as e:
-            logger.debug("Error reading Channel Process Info: %s", e)
+        if work_mode:
+            proc_info["Work_Mode"] = work_mode
+        metadata["Channel_Process_Info"] = proc_info
 
     def _read_log_info(self, wb: openpyxl.Workbook, metadata: dict[str, Any]) -> None:
         """Read 'Log' sheet.
@@ -374,13 +449,14 @@ class LanheXLSXReader(BaseReader):
             wb: openpyxl Workbook object
             metadata: Metadata dictionary to update
         """
-        if "Log" in wb.sheetnames:
-            try:
-                ws = wb["Log"]
-                headers = [str(c.value) for c in ws[1] if c.value]
-                metadata["Log_Info"] = [{h: self._convert_time(r[i]) for i, h in enumerate(headers) if i < len(r)} for r in ws.iter_rows(min_row=2, values_only=True) if r[0]]
-            except Exception as e:
-                logger.debug("Error reading Log Info: %s", e)
+        if "Log" not in wb.sheetnames:
+            return
+
+        ws = wb["Log"]
+        headers = [str(c.value).strip() for c in ws[1] if c.value]
+        metadata["Log_Info"] = [
+            {h: self._convert_cell_value(row[i], h) for i, h in enumerate(headers) if i < len(row)} for row in ws.iter_rows(min_row=2, values_only=True) if not self._is_empty_row(row)
+        ]
 
     @staticmethod
     def _find_data_sheet(wb: openpyxl.Workbook) -> str | None:
@@ -392,7 +468,148 @@ class LanheXLSXReader(BaseReader):
         Returns:
             Sheet name or None
         """
-        return next((name for name in wb.sheetnames if "DefaultGroup" in name), None)
+        excluded = {"Test information", "Ch1_Proc", "Log"}
+        return next((name for name in wb.sheetnames if "DefaultGroup" in name), None) or next((name for name in wb.sheetnames if name not in excluded), None)
+
+    @staticmethod
+    def _is_empty_row(row: tuple[Any, ...]) -> bool:
+        """Return True when a worksheet row has no meaningful values."""
+        return not row or all(cell is None or not str(cell).strip() for cell in row)
+
+    @staticmethod
+    def _header_values(row: tuple[Any, ...]) -> list[str]:
+        """Extract non-empty string header values from a worksheet row."""
+        return [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+
+    @classmethod
+    def _header_pairs(cls, row: tuple[Any, ...]) -> list[tuple[int, str]]:
+        """Return unique non-empty headers with their source column indices."""
+        seen: dict[str, int] = {}
+        pairs: list[tuple[int, str]] = []
+        for idx, cell in enumerate(row):
+            if cell is None:
+                continue
+            header = str(cell).strip()
+            if not header:
+                continue
+            count = seen.get(header, 0)
+            seen[header] = count + 1
+            unique_header = header if count == 0 else f"{header}_{count + 1}"
+            pairs.append((idx, unique_header))
+        return pairs
+
+    @staticmethod
+    def _is_measurement_header(headers: list[str]) -> bool:
+        """Detect the LANHE per-record measurement header."""
+        return len(headers) >= 3 and headers[:3] == ["Cycle", "Step", "Record"]
+
+    @staticmethod
+    def _is_cycle_summary_header(headers: list[str]) -> bool:
+        """Detect the cycle summary header at the top of the channel sheet."""
+        return "CapC/uAh" in headers and "CapD/uAh" in headers
+
+    @staticmethod
+    def _is_step_summary_header(headers: list[str]) -> bool:
+        """Detect a step summary header."""
+        return len(headers) >= 2 and headers[0] == "Step" and headers[1] == "WorkMode"
+
+    @staticmethod
+    def _is_measurement_row(row: tuple[Any, ...]) -> bool:
+        """LANHE record rows begin with numeric Cycle, Step, and Record values."""
+        if len(row) < 3:
+            return False
+        try:
+            int(row[0])
+            int(row[1])
+            int(row[2])
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_cycle_summary_row(row: tuple[Any, ...]) -> bool:
+        """Cycle summary rows begin with a numeric cycle id."""
+        try:
+            int(row[0])
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_step_summary_row(row: tuple[Any, ...]) -> bool:
+        """Step summary rows begin with numeric Step and textual WorkMode."""
+        if len(row) < 2:
+            return False
+        try:
+            int(row[0])
+            return isinstance(row[1], str) and bool(row[1].strip())
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _row_to_dict(cls, row: tuple[Any, ...], header_pairs: list[tuple[int, str]]) -> dict[str, Any]:
+        """Convert a worksheet row to a dictionary using source column indices."""
+        return {header: cls._convert_cell_value(row[col_idx], header) if col_idx < len(row) else None for col_idx, header in header_pairs}
+
+    @classmethod
+    def _convert_cell_value(cls, value: Any, header: str | None = None) -> Any:
+        """Convert one Excel cell into a Python value using LANHE conventions."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+
+        converted = cls._convert_time(value)
+        if not isinstance(converted, str):
+            return converted
+
+        if header in cls.TEXT_COLUMNS:
+            return converted
+        if cls.NUMERIC_REGEX.match(converted):
+            numeric = float(converted)
+            return int(numeric) if numeric.is_integer() else numeric
+        return converted
+
+    @classmethod
+    def _dataset_column_name(cls, column_name: str) -> str:
+        """Return the xarray variable name for an official LANHE column name."""
+        return cls.DATA_COLUMN_RENAMES.get(column_name, column_name)
+
+    @staticmethod
+    def _all_missing(values: Any) -> bool:
+        """Return True when a column contains only missing values."""
+        if not isinstance(values, list):
+            return False
+        return all(value is None for value in values)
+
+    @staticmethod
+    def _assign_systime_coord(ds: xr.Dataset, systime_key: str) -> xr.Dataset:
+        """Assign absolute system time as a coordinate and remove duplicate variable."""
+        try:
+            systimes = pd.to_datetime(ds[systime_key].values)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Failed to parse LANHE SysTime column: %s", exc)
+            return ds
+
+        ds = ds.assign_coords(systime=(("record",), systimes))
+        ds = ds.drop_vars(systime_key)
+        ds.systime.attrs.update({"long_name": "System Time"})
+        return ds
+
+    @staticmethod
+    def _assign_time_coord_from_column(ds: xr.Dataset, time_key: str) -> xr.Dataset:
+        """Assign relative test time as the canonical time_s coordinate."""
+        try:
+            time_values = pd.to_numeric(ds[time_key].values).astype(float)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Failed to parse LANHE %s column as seconds: %s", time_key, exc)
+            return ds
+
+        ds = ds.assign_coords(time_s=(("record",), time_values))
+        ds.time_s.attrs.update({"units": "s", "long_name": "Relative Test Time"})
+        return ds
 
     @staticmethod
     def _convert_time(value: Any) -> Any:
@@ -413,19 +630,37 @@ class LanheXLSXReader(BaseReader):
         if not isinstance(value, str):
             return value
 
-        # Handle LANHE specific time strings
-        if ":" in value:
-            if " " in value:
-                parts = value.split(" ", 1)
-                return LanheXLSXReader._parse_abs_time(parts[0], parts[1]) or LanheXLSXReader._parse_duration(parts[0], parts[1]) or value
+        return LanheXLSXReader._convert_time_string(value.strip())
 
-            # Simple date YYYY-MM-DD
-            if len(value) == 10 and value[4] in {"-", "/"}:
-                try:
-                    return datetime.strptime(value.replace("/", "-"), "%Y-%m-%d")
-                except ValueError:
-                    pass
+    @staticmethod
+    def _convert_time_string(value: str) -> Any:
+        """Convert a LANHE time-like string to datetime, seconds, or original text."""
+        if ":" not in value:
+            return value
+        days_duration = LanheXLSXReader._parse_days_duration(value)
+        if days_duration is not None:
+            return days_duration
+
+        if " " in value:
+            parts = value.split(" ", 1)
+            parsed = LanheXLSXReader._parse_abs_time(parts[0], parts[1]) or LanheXLSXReader._parse_duration(parts[0], parts[1])
+            return parsed if parsed is not None else value
+
+        # Simple date YYYY-MM-DD
+        if len(value) == 10 and value[4] in {"-", "/"}:
+            try:
+                return datetime.strptime(value.replace("/", "-"), "%Y-%m-%d")
+            except ValueError:
+                pass
         return value
+
+    @staticmethod
+    def _parse_days_duration(value: str) -> float | None:
+        """Parse strings such as '0 days 06:43:26' into seconds."""
+        match = re.match(r"^(\d+)\s+days?\s+(\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)$", value)
+        if not match:
+            return None
+        return LanheXLSXReader._parse_duration(match.group(1), match.group(2))
 
     @staticmethod
     def _parse_abs_time(date_part: str, time_part: str) -> datetime | None:
@@ -514,14 +749,23 @@ class LanheXLSXReader(BaseReader):
         # 1. Calculate Specific Capacity if mass is available
         spe_cap_cal = self._calculate_specific_capacity(data, active_material_mass)
 
-        # 2. Build ordered result dictionary
+        # 2. Build ordered result dictionary while preserving extra official columns
         cleaned_data = {}
-        for col in self.ORDERED_COLUMNS:
+        for col in self.MEASUREMENT_COLUMNS:
             if col == "SpeCap_cal/mAh/g":
                 if spe_cap_cal is not None:
                     cleaned_data[col] = spe_cap_cal
             elif col in data:
                 cleaned_data[col] = data[col]
+
+        for col, values in data.items():
+            if col.startswith("_") or col in cleaned_data:
+                continue
+            if not self._all_missing(values):
+                cleaned_data[col] = values
+
+        if "_metadata" in data:
+            cleaned_data["_metadata"] = data["_metadata"]
 
         return cleaned_data
 
@@ -539,25 +783,42 @@ class LanheXLSXReader(BaseReader):
         if not mass_input or "Capacity/uAh" not in data:
             return None
 
-        try:
-            mass_str = str(mass_input).lower()
-            # Extract numeric value
-            match = re.search(r"(\d+\.?\d*)", mass_str)
-            if not match:
-                return None
+        mass_g = LanheXLSXReader._parse_mass_g(mass_input)
+        if mass_g is None or mass_g <= 0:
+            return None
 
-            mass_val = float(match.group(1))
-            # Unit conversion (default to mg if not specified, but check for g)
-            factor = 1.0 if " g" in mass_str or (mass_str.endswith("g") and not mass_str.endswith("mg")) else 0.001
-            mass_g = mass_val * factor
+        return LanheXLSXReader._specific_capacity_from_capacity(data["Capacity/uAh"], mass_g)
 
-            if mass_g > 0:
-                # (uAh / 1000) -> mAh; mAh / g -> mAh/g
-                return [(float(c) / 1000.0) / mass_g if c is not None else None for c in data["Capacity/uAh"]]
-        except (ValueError, TypeError, ZeroDivisionError):
-            logger.debug("Failed to calculate specific capacity with mass: %s", mass_input)
+    @classmethod
+    def _parse_mass_g(cls, mass_input: Any) -> float | None:
+        """Parse active material mass into grams."""
+        match = cls.MASS_REGEX.search(str(mass_input))
+        if not match:
+            return None
 
+        value = float(match.group(1))
+        unit = match.group(2).lower().replace("µ", "u")
+        if unit == "g":
+            return value
+        if unit == "mg":
+            return value * 1e-3
+        if unit == "ug":
+            return value * 1e-6
         return None
+
+    @staticmethod
+    def _specific_capacity_from_capacity(capacity_uah: list[Any], mass_g: float) -> list[float | None]:
+        """Calculate specific capacity from capacity in uAh and mass in grams."""
+        result: list[float | None] = []
+        for capacity in capacity_uah:
+            if capacity is None:
+                result.append(None)
+                continue
+            try:
+                result.append((float(capacity) / 1000.0) / mass_g)
+            except (TypeError, ValueError, ZeroDivisionError):
+                result.append(None)
+        return result
 
     @staticmethod
     def _get_file_extension() -> str:
