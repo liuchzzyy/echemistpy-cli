@@ -1,31 +1,51 @@
-# Python
+# Python 缓存和构建产物
 __pycache__/
 *.py[cod]
+*$py.class
 build/
 dist/
 .eggs/
 *.egg
 *.egg-info/
+pip-wheel-metadata/
 
-# Virtual environments
+# 本地虚拟环境和解释器文件
 .env
+.env.*
 .venv/
 env/
 venv/
 ENV/
+__pypackages__/
 
-# Test and tool caches
+# 测试、覆盖率和工具缓存
 .coverage*
+coverage.xml
 .pytest_cache/
 .hypothesis/
 .nox/
 .tox/
 htmlcov/
 .ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.ty/
+.ty_cache/
 .benchmarks/
-.claude/
 
-# Editors and OS files
+# 本地工具状态
+.claude/
+.ipynb_checkpoints/
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# 编辑器和系统文件
 .vscode/
 .idea/
 .DS_Store
@@ -34,7 +54,12 @@ desktop.ini
 *.swp
 *.swo
 
-# Documentation build artifacts
+# 文档构建产物
 docs/_build/
 docs/api/generated/
-echemistpy-cli/Samples/
+
+# 本地样例输出和手动实验数据
+Samples/_local/
+Samples/_output/
+outputs/
+artifacts/
