@@ -633,12 +633,13 @@ class Analyzer(Protocol):
 
 ### 7.3 当前分析层修复方向
 
-- 增加 `analysis/__init__.py`。
-- 增加 `analysis/echem/__init__.py`、`analysis/xas/__init__.py`、`analysis/stxm/__init__.py`。
-- 修复 `echem/analyzer.py` 的导入为 `from echemistpy.analysis.registry import TechniqueAnalyzer`。
-- 修复 `stxm/analyzer.py` 的旧导入路径。
-- 让 `create_default_registry()` 从明确模块导入，不依赖子包根的隐式导出。
-- XAS analyzer 的 `required_columns` 改为 `("energy_ev", "absorption")`，并同步处理内部变量名。
+- `analysis.echem` 已开始从单文件分析器拆分为职责更明确的模块：
+  - `columns.py`：标准列选择、数值时间、电流单位辅助。
+  - `cycles.py`：循环编号识别、按循环切分、二维补齐。
+  - `capacity.py`：容量积分、充放电容量和库伦效率。
+  - `analyzer.py`：保留 `GCDAnalyzer` 的流程编排和结果组装。
+- `TechniqueRegistry` 应按 analyzer 的 `supported_techniques` 匹配别名，例如 `gcd/gpcl/galvanostatic/echem`。
+- 后续继续增加 `CVAnalyzer`、`EISAnalyzer`、`ChronoAnalyzer`，但第一阶段只做不会改变原始科学含义的数据整理，不做峰拟合或等效电路拟合。
 
 ## 8. Plot 层设计
 
@@ -667,10 +668,11 @@ class Plotter(Protocol):
 ### 8.2 推荐 plot API
 
 ```python
-from echemistpy.plot import plot_data
+from echemistpy.plotter import plot_bundle
 
-fig = plot_data(bundle, kind="echem-cycle")
-fig = plot_data(result, kind="xas-normalized")
+result = plot_bundle(bundle, kind="echem-cv")
+fig = result.figure
+ax = result.ax
 ```
 
 CLI：
@@ -696,6 +698,21 @@ plot 不应该：
 - 在内部重新读取原始文件。
 - 修改 `DataBundle`。
 - 为了画图执行不可见的科学计算；如果需要计算，应先由 analysis 产生结果。
+
+### 8.4 当前 echem plotter 约束
+
+- plotter 只画单图：每个 `PlotResult` 只包含一个主 `Axes`。
+- 默认 `figure size = (3.2, 2.5)`。
+- 默认使用 `src/echemistpy/plotter/liuchzzyy.mplstyle` 和 `src/echemistpy/plotter/colors.py` 中的 Paul Tol 色盲友好配色。
+- 第一批 echem 图类型：
+  - `echem-cv`：电流-电位 CV 曲线。
+  - `echem-gcd`：容量-电压恒流充放电曲线。
+  - `echem-cycling`：循环充电/放电容量。
+  - `echem-efficiency`：库伦效率。
+  - `echem-nyquist`：Nyquist 阻抗图。
+  - `echem-bode-magnitude`：Bode 阻抗模量图。
+  - `echem-bode-phase`：Bode 相位图。
+  - `echem-chrono`：时间-电流或时间-电压图。
 
 ## 9. CLI 设计
 

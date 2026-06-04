@@ -118,17 +118,17 @@ class TechniqueRegistry:
         # 1. 优先匹配指定仪器。
         if inst_lower:
             for a in self._analyzers:
-                if a.technique.lower() == tech_lower and a.instrument and a.instrument.lower() == inst_lower:
+                if _supports_technique(a, tech_lower) and a.instrument and a.instrument.lower() == inst_lower:
                     return a
 
         # 2. 匹配通用技术类型分析器（分析器未声明仪器）。
         for a in self._analyzers:
-            if a.technique.lower() == tech_lower and not a.instrument:
+            if _supports_technique(a, tech_lower) and not a.instrument:
                 return a
 
         # 3. 回退到第一个技术类型匹配项。
         for a in self._analyzers:
-            if a.technique.lower() == tech_lower:
+            if _supports_technique(a, tech_lower):
                 return a
 
         raise KeyError(f"未注册技术类型 '{technique}' 的分析器" + (f"，instrument='{instrument}'" if instrument else ""))
@@ -139,11 +139,11 @@ class TechniqueRegistry:
         Returns:
             可用技术类型标识符列表
         """
-        return sorted({a.technique for a in self._analyzers})
+        return sorted({tech for a in self._analyzers for tech in _technique_names(a)})
 
     def __contains__(self, technique: str) -> bool:
         """检查技术类型是否已注册。"""
-        return any(a.technique.lower() == technique.lower() for a in self._analyzers)
+        return any(_supports_technique(a, technique.lower()) for a in self._analyzers)
 
     def __len__(self) -> int:
         """返回已注册分析器数量。"""
@@ -156,12 +156,25 @@ def create_default_registry() -> TechniqueRegistry:
     Returns:
         包含标准分析器的 TechniqueRegistry
     """
-    from .echem import GalvanostaticAnalyzer  # noqa: PLC0415
+    from .echem import GCDAnalyzer  # noqa: PLC0415
     from .stxm import STXMAnalyzer  # noqa: PLC0415
     from .xas import XASAnalyzer  # noqa: PLC0415
 
     registry = TechniqueRegistry()
-    registry.register(GalvanostaticAnalyzer())
+    registry.register(GCDAnalyzer())
     registry.register(STXMAnalyzer())
     registry.register(XASAnalyzer())
     return registry
+
+
+def _technique_names(analyzer: TechniqueAnalyzer) -> tuple[str, ...]:
+    """返回分析器支持的所有技术名。"""
+    supported = getattr(analyzer, "supported_techniques", None)
+    if supported:
+        return tuple(str(tech) for tech in supported)
+    return (analyzer.technique,)
+
+
+def _supports_technique(analyzer: TechniqueAnalyzer, technique: str) -> bool:
+    """判断分析器是否支持指定技术名。"""
+    return technique in {name.lower() for name in _technique_names(analyzer)}

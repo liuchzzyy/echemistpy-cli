@@ -84,10 +84,14 @@ where = ["src"]
 [tool.setuptools.package-data]
 "echemistpy" = ["*.pyi"]
 "echemistpy.data" = ["*.json", "*.yaml"]
+"echemistpy.plotter" = ["*.mplstyle"]
 
 [tool.ruff]
 line-length = 200
 preview = true
+extend-exclude = [
+  "src/echemistpy/plotter/PaperDos_MS.ipynb",
+]
 
 [tool.ruff.lint]
 select = [
@@ -186,3 +190,8 @@ exclude_lines = [
   "def __repr__",
 ]
 ignore_errors = true
+
+[tool.ty.src]
+exclude = [
+  "src/echemistpy/plotter/PaperDos_MS.ipynb",
+]
