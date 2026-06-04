@@ -35,6 +35,15 @@ except ImportError:
     HAS_LMFIT = False
 
 logger = logging.getLogger(__name__)
+ENERGY_ALIASES = ("energy_ev", "energyc", "energy")
+
+
+def _energy_name(ds: xr.Dataset) -> str:
+    """返回 Dataset 中使用的能量坐标名。"""
+    for name in ENERGY_ALIASES:
+        if name in ds.coords or name in ds.data_vars or name in ds.dims:
+            return name
+    raise ValueError(f"Dataset 缺少能量坐标，支持名称: {ENERGY_ALIASES}。")
 
 
 def perform_pca(ds: xr.Dataset, n_components: Optional[int] = None, standardize: bool = True) -> xr.Dataset:
@@ -58,17 +67,19 @@ def perform_pca(ds: xr.Dataset, n_components: Optional[int] = None, standardize:
     if "record" not in ds.dims:
         raise ValueError("PCA requires a 'record' dimension (multiple spectra).")
 
-    # Shape: (n_samples, n_features)
-    X = ds.absorption.values
+    # 形状为 (n_samples, n_features)。
+    x_data = ds.absorption.values.astype(float, copy=False)
 
-    # Handle NaNs: drop columns/rows or fill?
-    # PCA cannot handle NaNs.
-    if np.isnan(X).any():
+    # PCA 不能直接处理 NaN。
+    if np.isnan(x_data).any():
         logger.warning("数据包含 NaN，已用 0 填充，请谨慎解释结果。")
-        X = np.nan_to_num(X)
+        x_data = np.nan_to_num(x_data)
+
+    if standardize:
+        x_data -= np.nanmean(x_data, axis=0)
 
     pca = PCA(n_components=n_components)
-    scores = pca.fit_transform(X)
+    scores = pca.fit_transform(x_data)
     components = pca.components_
     variance = pca.explained_variance_ratio_
 
@@ -78,10 +89,12 @@ def perform_pca(ds: xr.Dataset, n_components: Optional[int] = None, standardize:
     ds_out = xr.Dataset(coords=ds.coords)
 
     # Components (Loadings): depend on Energy
+    energy_name = _energy_name(ds)
+
     ds_out["pca_components"] = xr.DataArray(
         components,
-        dims=("component", "energyc"),
-        coords={"component": comp_coords, "energyc": ds.energyc},
+        dims=("component", energy_name),
+        coords={"component": comp_coords, energy_name: ds[energy_name]},
     )
 
     # Scores (Weights): depend on Record
@@ -118,26 +131,28 @@ def perform_nmf(ds: xr.Dataset, n_components: int = 2, init: str = "nndsvda") ->
     if "record" not in ds.dims:
         raise ValueError("NMF requires 'record' dimension.")
 
-    X = ds.absorption.values
-    if np.any(X < 0):
+    x_data = ds.absorption.values
+    if np.any(x_data < 0):
         logger.warning("数据包含负值，NMF 要求非负输入，已截断到 0。")
-        X = np.maximum(X, 0)
+        x_data = np.maximum(x_data, 0)
 
-    if np.isnan(X).any():
-        X = np.nan_to_num(X)
+    if np.isnan(x_data).any():
+        x_data = np.nan_to_num(x_data)
 
     nmf = NMF(n_components=n_components, init=init, max_iter=1000)
-    scores = nmf.fit_transform(X)
+    scores = nmf.fit_transform(x_data)
     components = nmf.components_
 
     comp_coords = np.arange(1, n_components + 1)
 
     ds_out = xr.Dataset(coords=ds.coords)
 
+    energy_name = _energy_name(ds)
+
     ds_out["nmf_components"] = xr.DataArray(
         components,
-        dims=("component", "energyc"),
-        coords={"component": comp_coords, "energyc": ds.energyc},
+        dims=("component", energy_name),
+        coords={"component": comp_coords, energy_name: ds[energy_name]},
     )
 
     ds_out["nmf_scores"] = xr.DataArray(
@@ -149,7 +164,7 @@ def perform_nmf(ds: xr.Dataset, n_components: int = 2, init: str = "nndsvda") ->
     return ds_out
 
 
-def perform_lcf(
+def perform_lcf(  # noqa: PLR0914, PLR0915
     ds: xr.Dataset,
     references: dict[str, np.ndarray | xr.DataArray],
     energy_range: Optional[tuple[float, float]] = None,
@@ -179,15 +194,11 @@ def perform_lcf(
         raise ImportError("lmfit is required for LCF.")
 
     # Prepare data
-    energy = ds.energyc.values
+    energy_name = _energy_name(ds)
+    energy = ds[energy_name].values
 
     # Mask range
-    if energy_range:
-        mask = (energy >= energy_range[0]) & (energy <= energy_range[1])
-    else:
-        mask = np.ones_like(energy, dtype=bool)
-
-    e_fit = energy[mask]
+    mask = (energy >= energy_range[0]) & (energy <= energy_range[1]) if energy_range else np.ones_like(energy, dtype=bool)
 
     # Prepare References (matrix)
     ref_names = list(references.keys())
@@ -195,10 +206,7 @@ def perform_lcf(
 
     for name in ref_names:
         ref_data = references[name]
-        if isinstance(ref_data, xr.DataArray):
-            val = ref_data.values
-        else:
-            val = np.array(ref_data)
+        val = ref_data.values if isinstance(ref_data, xr.DataArray) else np.array(ref_data)
 
         # Ensure shape matches
         if val.shape != energy.shape:
@@ -211,7 +219,7 @@ def perform_lcf(
     ref_matrix = np.array(ref_matrix).T  # (n_points, n_refs)
 
     # Function to minimize
-    def residual(params: Any, x_data: Any, y_data: Any, refs: Any) -> Any:
+    def residual(params: Any, y_data: Any, refs: Any) -> Any:
         model = np.zeros_like(y_data)
         for i, name in enumerate(ref_names):
             model += params[name].value * refs[:, i]
@@ -222,11 +230,10 @@ def perform_lcf(
     for name in ref_names:
         params.add(name, value=1.0 / len(ref_names), min=0 if non_negative else -np.inf)
 
-    if sum_to_one:
+    if sum_to_one and len(ref_names) > 1:
         # 约束：最后一个参考谱权重 = 1 - 其他参考谱权重之和。
-        if len(ref_names) > 1:
-            expr = "1 - (" + " + ".join(ref_names[:-1]) + ")"
-            params[ref_names[-1]].set(expr=expr)
+        expr = "1 - (" + " + ".join(ref_names[:-1]) + ")"
+        params[ref_names[-1]].set(expr=expr)
 
     # Iterate over records
     if "record" in ds.dims:
@@ -244,7 +251,7 @@ def perform_lcf(
     for i in range(len(records)):
         mu_exp = mu_all[i][mask]
 
-        result = lmfit.minimize(residual, params, args=(e_fit, mu_exp, ref_matrix))
+        result = lmfit.minimize(residual, params, args=(mu_exp, ref_matrix))
 
         # Extract weights
         # Explicitly ignore type check for result.params
@@ -264,7 +271,7 @@ def perform_lcf(
         full_ref_matrix = np.array(full_ref_list).T
 
         model_full = np.zeros_like(energy)
-        for j, name in enumerate(ref_names):
+        for j, _name in enumerate(ref_names):
             model_full += w[j] * full_ref_matrix[:, j]
 
         fit_list.append(model_full)
@@ -284,20 +291,20 @@ def perform_lcf(
     )
 
     ds_out["lcf_fit"] = xr.DataArray(
-        fit_list,
-        dims=("record", "energyc") if "record" in ds.dims else ("energyc"),
-        coords={"record": ds.record if "record" in ds.dims else [0], "energyc": energy},
+        np.asarray(fit_list),
+        dims=("record", energy_name),
+        coords={"record": ds.record if "record" in ds.dims else [0], energy_name: energy},
     )
 
     ds_out["lcf_residual"] = xr.DataArray(
-        resid_list,
-        dims=("record", "energyc") if "record" in ds.dims else ("energyc"),
-        coords={"record": ds.record if "record" in ds.dims else [0], "energyc": energy},
+        np.asarray(resid_list),
+        dims=("record", energy_name),
+        coords={"record": ds.record if "record" in ds.dims else [0], energy_name: energy},
     )
 
     ds_out["lcf_rfactor"] = xr.DataArray(
         rfactor_list,
-        dims="record" if "record" in ds.dims else "dim_0",
+        dims="record",
         coords={"record": ds.record if "record" in ds.dims else [0]},
     )
 

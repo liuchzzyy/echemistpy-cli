@@ -55,7 +55,7 @@ workflow 负责编排多步任务
 对 echemistpy 的启发：
 
 - `data` 层应该成为项目中心，不应继续放在 `io.structures`。
-- `plot` 不应作为 `analysis.xas.plotting` 的附属物。
+- `plot` 不应作为 `plotter.xas` 的附属物。
 - 操作数据库、缓存、索引、批量数据集时，不应通过 reader 或 analyzer 临时处理。
 
 ### 2.2 cellpy
@@ -231,8 +231,8 @@ tests/
 - `io` 层不再保留 `structures`, `standardizer`, `saver`, `column_mappings`, `reader_utils` 兼容 re-export；旧路径应视为内部重构中删除。
 - `data.storage` 负责 bundle 的实际序列化；`io.writer` 是 I/O 层写出门面，只转发到 `data.storage`，不重复实现格式细节。
 - 当前依赖方向应保持为 `io -> data`、`analysis -> data`、`cli -> io/data`，不允许 `data -> io`。
-- `analysis.xas.plotting` 应迁到 `plot.xas`，避免分析模块承担绘图接口。
-- `analysis/echem`, `analysis/stxm`, `analysis/xas` 已有包导出，分析模块已改为从 `data.models` 消费数据容器。
+- XAS 绘图入口已迁到 `plotter.xas`，避免分析模块承担绘图接口。
+- `analysis/echem`, `analysis/txm`, `analysis/xas` 已有包导出，分析模块已改为从 `data.models` 消费数据容器。
 - XAS/STXM 已开始统一到 `energy_ev/absorption/optical_density` 等标准名，但更完整的 schema validation 尚未实现。
 - reader 插件仍依赖插件目录扫描；能力声明已改为 `ReaderSpec`，后续可迁到 entry points。
 - 目录聚合逻辑放在 `BaseReader`，会让所有 reader 被迫承担目录组织职责。
@@ -362,7 +362,7 @@ src/echemistpy/
 - 输入：标准数据或分析结果。
 - 输出：figure 对象和图像文件。
 - 不做改变科学结果的分析，只做视图层需要的轻量选择、组合、样式。
-- `analysis.xas.plotting` 应迁入这里。
+- `plotter.xas` 放置 XAS 相关绘图接口。
 
 `cli`
 
@@ -625,7 +625,7 @@ class Analyzer(Protocol):
 
 - `analysis.echem` 放 GCD/CV/EIS/CA/CP 等。
 - `analysis.xas` 放 normalization、E0、LCF、PCA、AutoBK、FFT 等科学计算。
-- `analysis.txm` 或 `analysis.stxm` 放图像堆栈配准、PCA、clustering、ROI、chemical map。
+- `analysis.txm` 放图像堆栈配准、PCA、clustering、ROI、chemical map。
 - `analysis.xrd` 放 peak detection、拟合、相位/峰表处理。
 - 绘图函数不放在 analysis 内。
 - 文件读取不放在 analysis 内。

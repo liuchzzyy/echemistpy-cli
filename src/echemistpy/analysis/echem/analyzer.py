@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from echemistpy.analysis.echem.capacity import EfficiencyColumns, calculate_coulombic_efficiency, integrate_capacity_mah
+from echemistpy.analysis.echem.capacity import CoulombicEfficiencyColumns, calculate_coulombic_efficiency
 from echemistpy.analysis.echem.columns import (
     CAPACITY_COLUMNS,
     CURRENT_COLUMNS,
@@ -50,6 +50,7 @@ class GCDAnalyzer(TechniqueAnalyzer):
         ds = root_dataset(bundle)
         require_column(ds, self.time_columns, "时间")
         require_column(ds, self.current_columns, "电流")
+        require_column(ds, self.capacity_columns, "容量")
 
     def preprocess(self, bundle: DataBundle) -> DataBundle:
         """按时间排序，并确保存在数值型 time_s 坐标。"""
@@ -75,7 +76,7 @@ class GCDAnalyzer(TechniqueAnalyzer):
         time_key = require_column(ds, self.time_columns, "时间")
         current_key = require_column(ds, self.current_columns, "电流")
         potential_key = pick_column(ds, self.potential_columns)
-        capacity_key = pick_column(ds, self.capacity_columns)
+        capacity_key = require_column(ds, self.capacity_columns, "容量")
 
         if has_cycle_column(ds):
             result_ds = self._compute_cycle_dataset(ds, time_key, current_key, potential_key, capacity_key)
@@ -101,14 +102,14 @@ class GCDAnalyzer(TechniqueAnalyzer):
         time_key: str,
         current_key: str,
         potential_key: str | None,
-        capacity_key: str | None,
+        capacity_key: str,
     ) -> xr.Dataset:
         """按循环构建二维分析结果。"""
         cycles = split_by_cycle(ds)
         cycle_ids = sorted(cycles)
         time_matrix = pad_cycle_arrays(cycles, lambda cycle_ds, _cycle_id: numeric_array(cycle_ds, time_key))
         current_matrix = pad_cycle_arrays(cycles, lambda cycle_ds, _cycle_id: numeric_array(cycle_ds, current_key))
-        capacity_matrix = self._capacity_matrix(cycles, time_key, current_key, capacity_key)
+        capacity_matrix = self._capacity_matrix(cycles, capacity_key)
 
         result_vars: dict[str, Any] = {
             "time_s": (["cycle_number", "record"], time_matrix),
@@ -122,7 +123,7 @@ class GCDAnalyzer(TechniqueAnalyzer):
 
         ce = calculate_coulombic_efficiency(
             ds,
-            columns=EfficiencyColumns(time=time_key, current=current_key, capacity=capacity_key),
+            columns=CoulombicEfficiencyColumns(current=current_key, capacity=capacity_key),
             order=self.ce_order,
             min_denominator=self.ce_min_denominator,
         )
@@ -140,13 +141,13 @@ class GCDAnalyzer(TechniqueAnalyzer):
         time_key: str,
         current_key: str,
         potential_key: str | None,
-        capacity_key: str | None,
+        capacity_key: str,
     ) -> xr.Dataset:
         """构建无循环编号的一维分析结果。"""
         dim = primary_dimension(ds, current_key)
         time_values = numeric_array(ds, time_key)
         current_values = numeric_array(ds, current_key)
-        capacity_values = capacity_to_mah(numeric_array(ds, capacity_key), capacity_key) if capacity_key else integrate_capacity_mah(time_values, current_values, current_key)
+        capacity_values = capacity_to_mah(numeric_array(ds, capacity_key), capacity_key)
 
         result_vars: dict[str, Any] = {
             "time_s": ([dim], time_values),
@@ -163,14 +164,10 @@ class GCDAnalyzer(TechniqueAnalyzer):
     @staticmethod
     def _capacity_matrix(
         cycles: dict[int, xr.Dataset],
-        time_key: str,
-        current_key: str,
-        capacity_key: str | None,
+        capacity_key: str,
     ) -> np.ndarray:
         """返回按循环补齐后的容量矩阵，单位为 mAh。"""
-        if capacity_key:
-            return pad_cycle_arrays(cycles, lambda cycle_ds, _cycle_id: capacity_to_mah(numeric_array(cycle_ds, capacity_key), capacity_key))
-        return pad_cycle_arrays(cycles, lambda cycle_ds, _cycle_id: integrate_capacity_mah(numeric_array(cycle_ds, time_key), numeric_array(cycle_ds, current_key), current_key))
+        return pad_cycle_arrays(cycles, lambda cycle_ds, _cycle_id: capacity_to_mah(numeric_array(cycle_ds, capacity_key), capacity_key))
 
 
 def _normalize(values: np.ndarray, lower: float, upper: float) -> np.ndarray:

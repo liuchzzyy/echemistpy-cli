@@ -43,6 +43,24 @@ def test_gcd_analyzer_converts_capacity_uah_to_mah() -> None:
     result = GCDAnalyzer().analyze(bundle)
 
     assert float(result.data["capacity_mah"].max()) == pytest.approx(1.0)
+    assert float(result.data["charge_capacity_mah"].sel(cycle_number=1)) == pytest.approx(1.0)
+    assert float(result.data["discharge_capacity_mah"].sel(cycle_number=1)) == pytest.approx(0.5)
+    assert float(result.data["coulombic_efficiency_percent"].sel(cycle_number=1)) == pytest.approx(50.0)
+
+
+def test_gcd_analyzer_requires_capacity_column() -> None:
+    ds = xr.Dataset(
+        {
+            "cycle_number": (("record",), [1, 1]),
+            "current_ma": (("record",), [-1.0, -1.0]),
+            "voltage_v": (("record",), [1.2, 1.0]),
+        },
+        coords={"record": [1, 2], "time_s": (("record",), [0.0, 1.0])},
+    )
+    bundle = DataBundle(data=ds, meta=Metadata(technique=["gcd"]))
+
+    with pytest.raises(ValueError, match="未找到容量列"):
+        GCDAnalyzer().analyze(bundle)
 
 
 @pytest.mark.parametrize(

@@ -36,6 +36,15 @@ def _load_larch_symbols() -> tuple[bool, Any, Any, Any, Any]:
 HAS_LARCH, Group, find_e0, fluo_corr, xray_edge = _load_larch_symbols()
 
 logger = logging.getLogger(__name__)
+ENERGY_ALIASES = ("energy_ev", "energyc", "energy")
+
+
+def _energy_name(ds: xr.Dataset) -> str:
+    """返回 Dataset 中使用的能量坐标名。"""
+    for name in ENERGY_ALIASES:
+        if name in ds.coords or name in ds.data_vars or name in ds.dims:
+            return name
+    raise ValueError(f"Dataset 缺少能量坐标，支持名称: {ENERGY_ALIASES}。")
 
 
 def calibrate_energy(ds: xr.Dataset, element: str, edge: str = "K", reference_e0: Optional[float] = None) -> float:
@@ -57,7 +66,8 @@ def calibrate_energy(ds: xr.Dataset, element: str, edge: str = "K", reference_e0
     if not HAS_LARCH:
         raise ImportError("larch is required for calibration.")
 
-    energy = ds.energyc.values
+    energy_name = _energy_name(ds)
+    energy = ds[energy_name].values
     mu = ds.absorption.values
 
     # Handle multiple records: use the average spectrum for calibration
@@ -72,12 +82,9 @@ def calibrate_energy(ds: xr.Dataset, element: str, edge: str = "K", reference_e0
     elif reference_e0:
         theo_lookup = reference_e0
     else:
-        # Fallback to Larch lookup
+        # 回退到 Larch 的边能量查询。
         ref_data = xray_edge(element, edge)
-        if isinstance(ref_data, tuple):
-            theo_lookup = ref_data[0]
-        else:
-            theo_lookup = ref_data
+        theo_lookup = ref_data[0] if isinstance(ref_data, tuple) else ref_data
 
     # Use reference_e0 as the "theoretical" center if provided, otherwise the DB value
     center_e0 = reference_e0 if reference_e0 is not None else theo_lookup
@@ -151,11 +158,12 @@ def align_spectra(
     new_ds = ds.copy()
 
     # Apply shift first
-    current_energy = ds.energyc.values + shift
+    energy_name = _energy_name(ds)
+    current_energy = ds[energy_name].values + shift
 
     # If single spectrum, just update coordinate
     if "record" not in ds.dims:
-        new_ds = new_ds.assign_coords(energyc=current_energy)
+        new_ds = new_ds.assign_coords({energy_name: current_energy})
         if target_energy is not None:
             # Interpolate single spectrum to target
             f = interp1d(
@@ -166,12 +174,12 @@ def align_spectra(
                 fill_value=np.nan,
             )
             new_mu = f(target_energy)
-            new_ds = xr.Dataset({"absorption": (["energyc"], new_mu)}, coords={"energyc": target_energy})
+            new_ds = xr.Dataset({"absorption": ([energy_name], new_mu)}, coords={energy_name: target_energy})
         return new_ds
 
     # Multi-record case
     if target_energy is None:
-        new_ds = new_ds.assign_coords(energyc=current_energy)
+        new_ds = new_ds.assign_coords({energy_name: current_energy})
         return new_ds
 
     # Interpolate all records to target_energy
@@ -192,13 +200,13 @@ def align_spectra(
     # Reconstruct Dataset
     new_ds = xr.Dataset(
         data_vars={
-            "absorption": (("record", "energyc"), new_mu),
+            "absorption": (("record", energy_name), new_mu),
         },
-        coords={"record": records, "energyc": target_energy},
+        coords={"record": records, energy_name: target_energy},
     )
     # Copy other vars if compatible
     for v in ds.data_vars:
-        if v != "absorption" and "energyc" not in ds[v].dims:
+        if v != "absorption" and energy_name not in ds[v].dims:
             new_ds[v] = ds[v]
 
     return new_ds
@@ -210,9 +218,14 @@ def _fill_nans(y: np.ndarray) -> np.ndarray:
     if not nans.any():
         return y
 
-    x = lambda z: z.nonzero()[0]
+    if not np.any(~nans):
+        return np.zeros_like(y)
+
+    def indices(mask: np.ndarray) -> np.ndarray:
+        return mask.nonzero()[0]
+
     y_out = y.copy()
-    y_out[nans] = np.interp(x(nans), x(~nans), y[~nans])
+    y_out[nans] = np.interp(indices(nans), indices(~nans), y[~nans])
     return y_out
 
 
@@ -328,7 +341,8 @@ def correct_fluorescence(
         raise ImportError("larch is required for fluorescence correction.")
 
     ds_out = ds.copy()
-    energy = ds.energyc.values
+    energy_name = _energy_name(ds)
+    energy = ds[energy_name].values
     mu = ds.absorption.values
 
     is_2d = mu.ndim == 2
@@ -375,6 +389,17 @@ def check_consistency(ds: xr.Dataset, correlation_threshold: float = 0.95, energ
     mu = ds.absorption.values
     n_records = ds.sizes["record"]
     valid_indices = []
+    invalid_energy_indices: set[int] = set()
+
+    energy_name = _energy_name(ds)
+    energy_values = np.asarray(ds[energy_name].values)
+    if energy_values.ndim == 2 and energy_values.shape[0] == n_records:
+        reference_energy = energy_values[0]
+        for i in range(n_records):
+            delta = np.nanmax(np.abs(energy_values[i] - reference_energy))
+            if delta > energy_tolerance:
+                invalid_energy_indices.add(i)
+                logger.warning("记录 %s 被剔除: 能量轴偏差 %.4f eV > %.4f eV。", i, delta, energy_tolerance)
 
     # Use median to be robust against outliers
     median_spec = np.nanmedian(mu, axis=0)
@@ -384,6 +409,9 @@ def check_consistency(ds: xr.Dataset, correlation_threshold: float = 0.95, energ
         median_spec = _fill_nans(median_spec)
 
     for i in range(n_records):
+        if i in invalid_energy_indices:
+            continue
+
         y = mu[i]
         if np.isnan(y).any():
             y = _fill_nans(y)
@@ -416,6 +444,8 @@ def merge_spectra(ds: xr.Dataset, indices: Optional[list[int]] = None, method: s
     if "record" not in ds.dims:
         return ds.copy()
 
+    energy_name = _energy_name(ds)
+
     if indices is None:
         indices = list(range(ds.sizes["record"]))
 
@@ -427,17 +457,14 @@ def merge_spectra(ds: xr.Dataset, indices: Optional[list[int]] = None, method: s
     # Merge absorption
     mu = subset.absorption.values
 
-    if method == "median":
-        merged_mu = np.nanmedian(mu, axis=0)
-    else:  # average
-        merged_mu = np.nanmean(mu, axis=0)
+    merged_mu = np.nanmedian(mu, axis=0) if method == "median" else np.nanmean(mu, axis=0)
 
     # Create new dataset
     # Preserve coordinates except record
     coords = dict(ds.coords)
     coords.pop("record", None)
 
-    ds_out = xr.Dataset(data_vars={"absorption": (("energyc"), merged_mu)}, coords=coords)
+    ds_out = xr.Dataset(data_vars={"absorption": (energy_name, merged_mu)}, coords=coords)
 
     # Copy attributes
     ds_out.attrs = ds.attrs.copy()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Any, ClassVar, Optional
 
@@ -17,25 +18,23 @@ autobk: Any
 pre_edge: Any
 xftf: Any
 
-try:
-    from larch import Group as _LarchGroup
-    from larch.xafs import autobk as _autobk
-    from larch.xafs import pre_edge as _pre_edge
-    from larch.xafs import xftf as _xftf
 
-    Group = _LarchGroup
-    autobk = _autobk
-    pre_edge = _pre_edge
-    xftf = _xftf
-    HAS_LARCH = True
-except ImportError:
-    HAS_LARCH = False
-    Group = None
-    autobk = None
-    pre_edge = None
-    xftf = None
+def _load_larch_symbols() -> tuple[bool, Any, Any, Any, Any]:
+    """加载可选的 Larch 符号。"""
+    try:
+        larch_module = importlib.import_module("larch")
+        xafs_module = importlib.import_module("larch.xafs")
+    except ImportError:
+        return False, None, None, None, None
+    return True, larch_module.Group, xafs_module.autobk, xafs_module.pre_edge, xafs_module.xftf
+
+
+HAS_LARCH, Group, autobk, pre_edge, xftf = _load_larch_symbols()
 
 logger = logging.getLogger(__name__)
+
+ENERGY = "energy_ev"
+ENERGY_ALIASES = ("energy_ev", "energyc", "energy")
 
 
 class LarchXAS:
@@ -55,7 +54,7 @@ class LarchXAS:
         else:
             logger.warning("未安装 Larch，XAS 分析能力受限。")
 
-    def normalize(
+    def normalize(  # noqa: PLR0913, PLR0917
         self,
         e0: Optional[float] = None,
         step: Optional[float] = None,
@@ -140,7 +139,31 @@ class XASAnalyzer(TechniqueAnalyzer):
     @property
     def required_columns(self) -> tuple[str, ...]:
         """返回 XAS 分析所需标准列。"""
-        return ("energy_ev", "absorption")
+        return ("absorption",)
+
+    @staticmethod
+    def _as_dataset(data: xr.Dataset | xr.DataTree) -> xr.Dataset:
+        """将 XAS 输入收窄为 Dataset。"""
+        if isinstance(data, xr.Dataset):
+            return data
+        if data.dataset is not None and data.dataset.data_vars:
+            return data.dataset
+        for node in data.subtree:
+            if node.dataset is not None and node.dataset.data_vars:
+                return node.dataset
+        raise ValueError("DataTree 中没有可分析的 XAS Dataset。")
+
+    @staticmethod
+    def _normalize_energy_coord(ds: xr.Dataset) -> xr.Dataset:
+        """统一 XAS 能量坐标名到 energy_ev。"""
+        if ENERGY in ds.coords or ENERGY in ds.dims:
+            return ds
+        for name in ENERGY_ALIASES:
+            if name == ENERGY:
+                continue
+            if name in ds.coords or name in ds.dims:
+                return ds.rename({name: ENERGY})
+        raise ValueError(f"Dataset 缺少能量坐标，支持名称: {ENERGY_ALIASES}。")
 
     def _process_single_spectrum(self, energy: np.ndarray, mu: np.ndarray) -> dict[str, Any]:
         """处理单条一维谱图。"""
@@ -161,8 +184,9 @@ class XASAnalyzer(TechniqueAnalyzer):
         results = {}
 
         # 1. 归一化。
-        try:
-            current_e0 = self.normalize_params.get("e0")
+        try:  # noqa: PLW0717
+            normalize_params = dict(self.normalize_params)
+            current_e0 = normalize_params.pop("e0", None)
 
             # 若提供理论 E0 且未显式指定 E0，则自动搜索。
             if current_e0 is None and self.theoretical_e0:
@@ -172,13 +196,14 @@ class XASAnalyzer(TechniqueAnalyzer):
                 except Exception as e:
                     logger.warning("约束 E0 搜索失败: %s", e)
 
-            res = analyzer.normalize(e0=current_e0, **self.normalize_params)
+            res = analyzer.normalize(e0=current_e0, **normalize_params)
 
             # 将结果对齐回原始网格。
             norm_aligned = np.full_like(energy, np.nan)
-            norm_aligned[mask] = res["norm"]
+            if res["norm"] is not None:
+                norm_aligned[mask] = res["norm"]
             results["norm_absorption"] = norm_aligned
-            results["e0"] = res["e0"]
+            results["e0_ev"] = res["e0"]
             results["edge_step"] = res["edge_step"]
         except Exception as e:
             logger.warning("归一化失败: %s", e)
@@ -201,19 +226,13 @@ class XASAnalyzer(TechniqueAnalyzer):
 
         return results
 
-    def _compute(self, bundle: DataBundle) -> AnalysisBundle:
-        ds = bundle.data
-        if isinstance(ds, xr.DataTree):
-            ds = ds.dataset if ds.dataset is not None else xr.Dataset()
-            if not ds.data_vars:
-                raise ValueError("DataTree 根节点没有数据变量。")
+    def _compute(self, bundle: DataBundle) -> AnalysisBundle:  # noqa: PLR0912, PLR0914, PLR0915
+        ds = self._normalize_energy_coord(self._as_dataset(bundle.data))
 
-        if "energy_ev" not in ds.coords and "energy_ev" not in ds.data_vars:
-            raise ValueError("Dataset 缺少 'energy_ev'。")
         if "absorption" not in ds.data_vars:
             raise ValueError("Dataset 缺少 'absorption'。")
 
-        energy = ds.coords["energy_ev"].values if "energy_ev" in ds.coords else ds["energy_ev"].values
+        energy = ds.coords[ENERGY].values if ENERGY in ds.coords else ds[ENERGY].values
 
         # 判断是否包含多条记录。
         has_record = "record" in ds.dims
@@ -225,8 +244,8 @@ class XASAnalyzer(TechniqueAnalyzer):
             res = self._process_single_spectrum(energy, mu)
 
             if "norm_absorption" in res:
-                results_ds["norm_absorption"] = (ds.coords["energy_ev"].dims, res["norm_absorption"])
-                results_ds["e0"] = res["e0"]
+                results_ds["norm_absorption"] = (ds.coords[ENERGY].dims, res["norm_absorption"])
+                results_ds["e0_ev"] = res["e0_ev"]
                 results_ds["edge_step"] = res["edge_step"]
             if "chi_k" in res:
                 results_ds["chi_k"] = xr.DataArray(res["chi_k"], dims="k", coords={"k": res["k"]})
@@ -247,7 +266,7 @@ class XASAnalyzer(TechniqueAnalyzer):
                 res = self._process_single_spectrum(energy, mu_i)
 
                 # 收集标量结果。
-                e0_list.append(res.get("e0", np.nan))
+                e0_list.append(res.get("e0_ev", np.nan))
                 edge_step_list.append(res.get("edge_step", np.nan))
 
                 # 收集数组结果。
@@ -274,8 +293,8 @@ class XASAnalyzer(TechniqueAnalyzer):
             if norm_list:
                 results_ds["norm_absorption"] = (("record", "energy_ev"), np.array(norm_list))
 
-            results_ds["e0"] = (("record"), np.array(e0_list))
-            results_ds["edge_step"] = (("record"), np.array(edge_step_list))
+            results_ds["e0_ev"] = ("record", np.array(e0_list))
+            results_ds["edge_step"] = ("record", np.array(edge_step_list))
 
             # 将不等长数组截断到共同长度后堆叠。
             def stack_jagged(data_list: list[Any], grid: Any, dim_name: str) -> Optional[xr.DataArray]:

@@ -88,9 +88,6 @@ where = ["src"]
 [tool.ruff]
 line-length = 200
 preview = true
-extend-exclude = [
-  "src/echemistpy/plotter/PaperDos_MS.ipynb",
-]
 
 [tool.ruff.lint]
 select = [
@@ -116,58 +113,6 @@ logger-objects = ["app.logger", "logger"]
 "tests/**/*" = [
   "S101",
   "ARG",
-]
-"src/echemistpy/io/plugins/echem_lanhe_ccs.py" = [
-  "N806",
-  "N815",
-  "PLR0912",
-  "PLR0914",
-  "PLR0915",
-  "PLR6301",
-  "RUF046",
-]
-"src/echemistpy/io/plugins/TXM_MISTRAL.py" = [
-  "N999",
-]
-"src/echemistpy/io/plugins/XAS_CLAESS.py" = [
-  "N999",
-]
-"src/echemistpy/io/plugins/XRD_MSPD.py" = [
-  "N999",
-]
-"src/echemistpy/analysis/stxm/analyzer.py" = [
-  "PLW0717",
-]
-"src/echemistpy/analysis/xas/analyzer.py" = [
-  "PLR0912",
-  "PLR0913",
-  "PLR0914",
-  "PLR0915",
-  "PLR0917",
-  "PLW0717",
-]
-"src/echemistpy/analysis/xas/fitting.py" = [
-  "ARG001",
-  "B007",
-  "N806",
-  "PLR0912",
-  "PLR0914",
-  "PLR0915",
-  "SIM102",
-  "SIM108",
-]
-"src/echemistpy/analysis/xas/plotting.py" = [
-  "B905",
-  "E741",
-  "PLR0913",
-  "PLR0914",
-  "PLR0915",
-  "PLR0917",
-]
-"src/echemistpy/analysis/xas/processing.py" = [
-  "ARG001",
-  "E731",
-  "SIM108",
 ]
 
 [tool.pytest.ini_options]

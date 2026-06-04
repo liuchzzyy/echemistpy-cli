@@ -157,12 +157,12 @@ def create_default_registry() -> TechniqueRegistry:
         包含标准分析器的 TechniqueRegistry
     """
     from .echem import GCDAnalyzer  # noqa: PLC0415
-    from .stxm import STXMAnalyzer  # noqa: PLC0415
+    from .txm import TXMAnalyzer  # noqa: PLC0415
     from .xas import XASAnalyzer  # noqa: PLC0415
 
     registry = TechniqueRegistry()
     registry.register(GCDAnalyzer())
-    registry.register(STXMAnalyzer())
+    registry.register(TXMAnalyzer())
     registry.register(XASAnalyzer())
     return registry
 
