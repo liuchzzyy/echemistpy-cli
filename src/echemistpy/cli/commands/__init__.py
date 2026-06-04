@@ -1,4 +1,4 @@
-"""CLI command functions."""
+"""CLI 命令函数。"""
 
 from echemistpy.cli.commands.convert_data import convert
 from echemistpy.cli.commands.doctor import check_runtime, doctor

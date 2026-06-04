@@ -1,4 +1,4 @@
-"""Canonical names and schema identifiers for echemistpy data."""
+"""echemistpy 数据的标准名称和 schema 标识。"""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ ALL_NAMES = frozenset(name for names in NAMES_BY_DOMAIN.values() for name in nam
 
 
 def names(domain: str | None = None) -> tuple[str, ...]:
-    """Return canonical names for a domain or for all domains."""
+    """返回指定域或全部域的标准名称。"""
     if domain is None:
         return tuple(sorted(ALL_NAMES))
     return NAMES_BY_DOMAIN[domain.lower()]

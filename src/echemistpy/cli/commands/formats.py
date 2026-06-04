@@ -1,4 +1,4 @@
-"""Formats command."""
+"""格式列表命令。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import typer
 
 
 def formats(domain: str | None = None) -> None:
-    """Print supported reader formats, optionally filtered by domain."""
+    """打印支持的 reader 格式，可按技术域过滤。"""
     from echemistpy.io import list_reader_specs  # noqa: PLC0415
 
     domain_key = domain.lower() if domain else None

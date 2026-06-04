@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""STXM Data Analyzer for chemical mapping and spectroscopy analysis."""
+"""STXM/TXM 化学成像与谱图分析器。"""
 
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 import lmfit
 import numpy as np
@@ -16,10 +17,9 @@ from skimage.registration import phase_cross_correlation
 from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
-from traitlets import Bool, Dict, Float, Int, List, Unicode
 
 from echemistpy.analysis.registry import TechniqueAnalyzer
-from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData
+from echemistpy.data.models import AnalysisBundle, DataBundle
 
 logger = logging.getLogger(__name__)
 
@@ -27,33 +27,31 @@ ENERGY = "energy_ev"
 
 
 def b_value_model(x: np.ndarray, b: float, c: float) -> np.ndarray:
-    """B-value model for thickness correction with improved numerical stability.
+    """用于厚度校正的 B-value 模型。
 
-    Equation: I_thick = -ln((exp(-I_thin * C) + B) / (1 + B))
-    Rewritten as: ln(1 + B) - ln(exp(-I_thin * C) + B)
+    公式：I_thick = -ln((exp(-I_thin * C) + B) / (1 + B))
+    改写为：ln(1 + B) - ln(exp(-I_thin * C) + B)，以改善数值稳定性。
     """
-    # Enforce non-negative b for physical sense and stability during fitting exploration
+    # 约束 b 非负，保证拟合过程的物理意义和数值稳定性。
     b_safe = max(b, 0.0)
 
-    # Calculate terms
-    # Term 1: ln(1 + B). Use log1p for precision when B is small
+    # 第一项：ln(1 + B)。B 很小时 log1p 精度更好。
     term1 = np.log1p(b_safe)
 
-    # Term 2: ln(exp(...) + B)
-    # Prevent exp overflow/underflow (though x*c usually > 0, so exp -> 0)
+    # 第二项：ln(exp(...) + B)。
     exp_val = np.exp(-x * c)
 
-    # Add epsilon to prevent log(0) if exp_val -> 0 and b -> 0
+    # 增加极小值，避免 exp_val -> 0 且 b -> 0 时出现 log(0)。
     term2 = np.log(exp_val + b_safe + 1e-15)
 
     return term1 - term2
 
 
 def build_lmfit_model(config: dict) -> tuple[lmfit.Model, lmfit.Parameters]:  # noqa: PLR0912
-    """Build a composite model from configuration dictionary using lmfit."""
+    """根据配置字典构建 lmfit 组合模型。"""
     components = config.get("components", [])
     if not components:
-        raise ValueError("No components defined for model")
+        raise ValueError("模型配置没有定义 components。")
 
     composite_model = None
     params = lmfit.Parameters()
@@ -62,7 +60,7 @@ def build_lmfit_model(config: dict) -> tuple[lmfit.Model, lmfit.Parameters]:  # 
         ctype = comp["type"].lower()
         prefix = f"c{i}_"
 
-        # Select model component
+        # 选择模型组件。
         if ctype == "gaussian":
             model = lmfit.models.GaussianModel(prefix=prefix)
         elif ctype == "lorentzian":
@@ -72,27 +70,27 @@ def build_lmfit_model(config: dict) -> tuple[lmfit.Model, lmfit.Parameters]:  # 
         elif ctype in {"arctan", "step"}:
             model = lmfit.models.StepModel(prefix=prefix, form="arctan")
         else:
-            logger.warning("Unknown component type: %s, skipping", ctype)
+            logger.warning("未知模型组件类型: %s，已跳过。", ctype)
             continue
 
-        # Initialize Parameters
+        # 初始化参数。
         comp_params = comp.get("params", {})
         bounds = comp.get("bounds", {})
 
-        # Standard lmfit param names
+        # lmfit 标准参数名。
         model_params = model.make_params()
 
-        # Update values from config
+        # 从配置更新参数值。
         for pname, pval in comp_params.items():
             full_name = f"{prefix}{pname}"
             if full_name in model_params:
                 model_params[full_name].set(value=pval)
 
-        # Apply bounds if provided
+        # 应用可选边界。
         lower_bounds = bounds.get("lower")
         upper_bounds = bounds.get("upper")
 
-        # Define order map for supported types
+        # 定义支持类型的参数顺序。
         param_order = []
         if ctype in {"gaussian", "lorentzian"} or ctype in {"arctan", "step"}:
             param_order = ["amplitude", "center", "sigma"]
@@ -111,7 +109,7 @@ def build_lmfit_model(config: dict) -> tuple[lmfit.Model, lmfit.Parameters]:  # 
                 if full_name in model_params:
                     model_params[full_name].set(max=ub)
 
-        # Add to composite
+        # 加入组合模型。
         if composite_model is None:
             composite_model = model
         else:
@@ -120,56 +118,50 @@ def build_lmfit_model(config: dict) -> tuple[lmfit.Model, lmfit.Parameters]:  # 
         params.update(model_params)
 
     if composite_model is None:
-        raise ValueError("No valid components found in configuration")
+        raise ValueError("模型配置中没有有效组件。")
 
     return composite_model, params
 
 
 class STXMAnalyzer(TechniqueAnalyzer):
-    """Analyzer for Scanning Transmission X-ray Microscopy (STXM) data.
+    """扫描透射 X 射线显微（STXM/TXM）分析器。
 
-    Workflow:
-    1. Preprocessing (Alignment, Energy interpolation)
-    2. Denoising (PCA)
-    3. Background Removal (Pre-edge linear subtraction)
-    4. Thickness Correction (B-Value method)
-    5. Chemical Analysis (ROI Mapping, Clustering)
-    6. Spectrum Fitting
+    流程：
+    1. 预处理：图像配准和能量插值
+    2. PCA 去噪
+    3. pre-edge 线性背景扣除
+    4. B-value 厚度校正
+    5. ROI 映射和聚类
+    6. 谱图拟合
     """
 
-    technique = Unicode("txm")
-    name = Unicode("STXMAnalyzer")
+    technique = "txm"
+    name = "STXMAnalyzer"
 
-    # Configuration traits
-    energy_step = Float(0.1, help="Energy step for interpolation (eV)")
-    align_images = Bool(True, help="Perform image alignment during preprocessing")
-    alignment_method = Unicode("phase_correlation", help="Method used for image alignment")
-    alignment_upsample_factor = Int(10, help="Upsample factor for subpixel alignment precision")
+    # 分析配置。
+    energy_step = 0.1
+    align_images = True
+    alignment_method = "phase_correlation"
+    alignment_upsample_factor = 10
+    pca_components = 5
 
-    pca_components = Int(5, help="Number of PCA components for denoising")
+    # UMAP 配置。
+    use_umap = False
+    umap_n_components = 2
+    umap_n_neighbors = 15
+    umap_min_dist = 0.1
+    umap_metric = "euclidean"
 
-    # UMAP configuration
-    use_umap = Bool(False, help="Enable UMAP dimensionality reduction")
-    umap_n_components = Int(2, help="Dimension of the embedded space (typically 2 for visualization)")
-    umap_n_neighbors = Int(15, help="Number of neighbors for UMAP")
-    umap_min_dist = Float(0.1, help="Minimum distance between points in embedding")
-    umap_metric = Unicode("euclidean", help="Metric to use for UMAP")
+    pre_edge_range: ClassVar[tuple[float, float]] = (625.0, 635.0)
+    roi_maps: ClassVar[dict[str, list[float]]] = {}
+    spatial_rois: ClassVar[dict[str, list[float]]] = {}
+    roi_ranges: ClassVar[list[tuple[float, float]]] = []
+    clustering_method = "kmeans"
+    clustering_params: ClassVar[dict[str, object]] = {}
+    n_clusters = 3
 
-    pre_edge_range = List(Float(), default_value=[625.0, 635.0], help="Pre-edge energy range for background removal (eV)")
-    roi_maps = Dict(key_trait=Unicode(), value_trait=List(Float()), help="Dictionary of ROI definitions: {name: [start, end]}", default_value={})
-    spatial_rois = Dict(key_trait=Unicode(), value_trait=List(Float()), help="Dictionary of Spatial ROI definitions: {name: [x_start, x_end, y_start, y_end]}", default_value={})
-    roi_ranges = List(help="Legacy: List of (start, end) tuples. Use roi_maps instead.")
-    clustering_method = Unicode("kmeans", help="Clustering algorithm: kmeans, minibatch_kmeans, gmm, dbscan")
-    clustering_params = Dict(help="Additional parameters for clustering algorithm", default_value={})
-    n_clusters = Int(3, help="Number of clusters for K-means segmentation")
-
-    # Model Fitting configuration
-    fitting_models = Dict(
-        key_trait=Unicode(),
-        value_trait=Dict(),
-        help="Dictionary of model configurations for fitting spectra. Key is name, Value is dict with 'components', 'ranges', 'targets'",
-        default_value={},
-    )
+    # 谱图拟合配置。
+    fitting_models: ClassVar[dict[str, dict]] = {}
 
     @property
     def required_columns(self) -> tuple[str, ...]:
@@ -177,7 +169,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
     @staticmethod
     def _get_spatial_dims(da: xr.DataArray) -> tuple[str, str]:
-        """Detect spatial dimension names from DataArray."""
+        """从 DataArray 中识别空间维度名。"""
         y_candidates = ["y", "y_um", "y_nm", "y_px", "Y"]
         x_candidates = ["x", "x_um", "x_nm", "x_px", "X"]
 
@@ -195,48 +187,48 @@ class STXMAnalyzer(TechniqueAnalyzer):
                 break
 
         if y_dim is None or x_dim is None:
-            # Fallback: assume last two dims are spatial
+            # 回退：默认最后两个非能量维度为空间维度。
             non_energy_dims = [str(d) for d in da.dims if "energy" not in str(d).lower()]
             if len(non_energy_dims) >= 2:
                 y_dim, x_dim = non_energy_dims[-2:]
             else:
-                raise ValueError(f"Could not detect spatial dimensions from {da.dims}")
+                raise ValueError(f"无法从 {da.dims} 识别空间维度。")
 
         return str(y_dim), str(x_dim)
 
-    # Step 1: Align
+    # 步骤 1：图像配准。
     def align_stack(self, ds: xr.Dataset | xr.DataTree) -> xr.Dataset:  # noqa: PLR0914
-        """Align image stack to correct for drift using Scikit-image."""
+        """使用 Scikit-image 对图像堆栈做漂移校正。"""
         if isinstance(ds, xr.DataTree):
             if ds.dataset is None:
-                raise TypeError("align_stack requires a Dataset or DataTree with a root dataset")
+                raise TypeError("align_stack 需要 Dataset 或包含根 Dataset 的 DataTree。")
             ds = ds.dataset
 
         if "optical_density" not in ds:
             return ds
 
-        # Work on a copy
+        # 在副本上执行配准，避免修改输入数据。
         ds = ds.copy(deep=True)
         da = ds["optical_density"]
 
-        # Ensure energy_ev is first dimension for iterating
+        # 将 energy_ev 放到第一维，方便逐帧处理。
         if ENERGY in da.dims:
             da_aligned = da.transpose(ENERGY, ...)
         else:
             return ds
 
-        # Work on numpy array
+        # 转成 numpy 数组处理。
         data = da_aligned.values.copy()
         n_images = data.shape[0]
         if n_images < 2:
             return ds
 
-        # Reference: Middle image
+        # 使用中间帧作为参考帧。
         ref_idx = n_images // 2
         ref_img = np.nan_to_num(data[ref_idx])
 
         shifts = []
-        logger.info("Aligning stack to frame %d using %s...", ref_idx, self.alignment_method)
+        logger.info("使用 %s 将图像堆栈配准到第 %d 帧。", self.alignment_method, ref_idx)
 
         for i in range(n_images):
             if i == ref_idx:
@@ -249,10 +241,10 @@ class STXMAnalyzer(TechniqueAnalyzer):
             if self.alignment_method == "phase_correlation":
                 try:
                     shift, _, _ = phase_cross_correlation(ref_img, curr_img, upsample_factor=self.alignment_upsample_factor)
-                    # shift is [y, x] to move current to ref
+                    # shift 为 [y, x]，表示把当前帧移动到参考帧。
                     dy, dx = float(shift[0]), float(shift[1])
                 except Exception as e:
-                    logger.debug("Alignment failed for frame %d: %s", i, e)
+                    logger.debug("第 %d 帧配准失败: %s", i, e)
 
             elif self.alignment_method == "center_of_mass":
                 try:
@@ -261,79 +253,79 @@ class STXMAnalyzer(TechniqueAnalyzer):
                     dy = cy_ref - cy_curr
                     dx = cx_ref - cx_curr
                 except Exception as e:
-                    logger.debug("Center of mass alignment failed for frame %d: %s", i, e)
+                    logger.debug("第 %d 帧质心配准失败: %s", i, e)
 
             shifts.append((dy, dx))
 
-            # Apply shift
+            # 应用位移。
             data[i] = scipy.ndimage.shift(data[i], (dy, dx), order=1, mode="nearest")
 
-        # Update dataset
+        # 更新数据集。
         ds["optical_density"] = (da_aligned.dims, data)
         ds.attrs["alignment_shifts"] = shifts
 
         return ds
 
-    # Step 2: Interpolate
+    # 步骤 2：能量轴插值。
     def interpolate_energy(self, ds: xr.Dataset | xr.DataTree) -> xr.Dataset:
-        """Interpolate energy axis to uniform grid."""
+        """将能量轴插值到均匀网格。"""
         if isinstance(ds, xr.DataTree):
             if ds.dataset is None:
-                raise TypeError("interpolate_energy requires a Dataset or DataTree with a root dataset")
+                raise TypeError("interpolate_energy 需要 Dataset 或包含根 Dataset 的 DataTree。")
             ds = ds.dataset
 
-        # Work on a copy
+        # 在副本上插值，避免修改输入数据。
         ds = ds.copy(deep=True)
 
         if ENERGY not in ds.coords:
-            logger.warning("No '%s' coordinate found. Skipping interpolation.", ENERGY)
+            logger.warning("未找到 '%s' 坐标，跳过插值。", ENERGY)
             return ds
 
         energy = ds.coords[ENERGY].values
         if len(energy) < 2:
             return ds
 
-        # Handle duplicate energy values
+        # 处理重复能量值。
         if not ds.indexes[ENERGY].is_unique:
-            logger.warning("Duplicate energy values found. Averaging duplicates.")
+            logger.warning("发现重复能量值，将对重复点取平均。")
             ds = ds.drop_duplicates(ENERGY)
             energy = ds.coords[ENERGY].values
 
-        # Create uniform energy grid
+        # 构建均匀能量网格。
         e_min, e_max = energy.min(), energy.max()
         new_energy = np.arange(e_min, e_max + self.energy_step, self.energy_step)
 
-        # Interpolate
-        # xarray's interp handles all variables with energy_ev dim
+        # xarray.interp 会处理所有包含 energy_ev 维度的变量。
         cleaned_ds = ds.interp({ENERGY: new_energy}, method="linear", kwargs={"fill_value": "extrapolate"})
 
         return cleaned_ds
 
-    def preprocess(self, raw_data: RawData) -> RawData:
-        """Run preprocessing steps: Alignment and Interpolation."""
-        ds = raw_data.data.copy(deep=True)
+    def preprocess(self, bundle: DataBundle) -> DataBundle:
+        """执行图像配准和能量插值预处理。"""
+        ds = bundle.data.copy(deep=True)
 
         if self.align_images:
             try:
                 ds = self.align_stack(ds)
             except Exception as e:
-                logger.warning("Image alignment failed: %s", e)
+                logger.warning("图像配准失败: %s", e)
 
         try:
             ds = self.interpolate_energy(ds)
         except Exception as e:
-            logger.warning("Energy interpolation failed: %s", e)
+            logger.warning("能量插值失败: %s", e)
 
-        return RawData(data=ds)
+        bundle.data = ds
+        return bundle
 
-    # Step 3: Denoise (PCA)
+    # 步骤 3：PCA 去噪。
     def denoise_pca(self, ds: xr.Dataset) -> tuple[xr.Dataset, dict]:
-        """Perform PCA denoising on the data."""
+        """对数据执行 PCA 去噪。"""
         ds = ds.copy(deep=True)
         results = {}
 
         if "optical_density" not in ds:
-            logger.warning("Missing 'optical_density' for PCA.")
+            logger.warning("PCA 去噪缺少 'optical_density'。")
             return ds, results
 
         da = ds["optical_density"]
@@ -348,16 +340,10 @@ class STXMAnalyzer(TechniqueAnalyzer):
         flat_data_clean = np.nan_to_num(flat_data) if mask_nan.any() else flat_data
 
         try:
-            # PCA: X is (n_samples=pixels, n_features=energy)
-            # sklearn PCA expects (n_samples, n_features).
-            # Here we want to decompose the SPECTRA (features=energy channels) or PIXELS?
-            # Standard PCA for image denoising: Treat each PIXEL as a sample, and ENERGY as features.
-            # So input should be (n_pixels, n_energy).
+            # PCA 输入为 (n_samples, n_features)，这里将像素作为样本、能量通道作为特征。
             x_input = flat_data_clean.T  # Shape: (n_pixels, n_energy)
 
-            # Standardize? Usually for PCA on spectra we center but might not scale if units are same.
-            # Mantis normalizes each pixel vector to unit length?
-            # Let's keep it simple: Centering is done by PCA automatically.
+            # PCA 会自动做中心化，这里不额外缩放谱图强度。
 
             n_comp = min(self.pca_components, *x_input.shape)
             pca = PCA(n_components=n_comp)
@@ -378,23 +364,20 @@ class STXMAnalyzer(TechniqueAnalyzer):
             results["pca_singular_values"] = pca.singular_values_
             results["pca_components_matrix"] = pca.components_
 
-            # Additional statistics for Scree Plot
-            # To get full eigenvalues (for scree plot beyond n_components), we might need more components
-            # But for performance, we stick to n_comp or a slightly larger number if requested?
-            # Let's just return what we have.
+            # 返回当前组件的解释方差，供后续 scree plot 使用。
             results["pca_explained_variance"] = pca.explained_variance_
 
         except Exception as e:
-            logger.error("PCA failed: %s", e)
+            logger.error("PCA 去噪失败: %s", e)
             ds["denoised"] = da
 
         return ds, results
 
-    # Step 4: Background Removal
+    # 步骤 4：背景扣除。
     def remove_background(self, ds: xr.Dataset) -> xr.Dataset:
-        """Remove pre-edge linear background."""
+        """扣除 pre-edge 线性背景。"""
         ds = ds.copy(deep=True)
-        # Use denoised if available, else original
+        # 优先使用去噪结果，否则使用原始 optical_density。
         work_da = ds["denoised"] if "denoised" in ds else ds["optical_density"]
 
         e_coords = work_da.coords[ENERGY].values
@@ -405,9 +388,9 @@ class STXMAnalyzer(TechniqueAnalyzer):
                 x_pre = e_coords[mask_pre]
                 y_pre = work_da.isel({ENERGY: mask_pre}).values.reshape(len(x_pre), -1)
 
-                # Linear regression: y = mx + c
+                # 线性回归：y = mx + c。
                 x_mat = np.vstack([x_pre, np.ones(len(x_pre))]).T
-                # beta: [slope, intercept]
+                # beta: [斜率, 截距]。
                 beta, _, _, _ = scipy.linalg.lstsq(x_mat, y_pre)
 
                 x_full = np.vstack([e_coords, np.ones(len(e_coords))]).T
@@ -416,22 +399,22 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
                 ds["background_removed"] = work_da - background
             except Exception as e:
-                logger.warning("Background removal failed: %s", e)
+                logger.warning("背景扣除失败: %s", e)
                 ds["background_removed"] = work_da
         else:
             ds["background_removed"] = work_da
 
         return ds
 
-    # Step 5: Thickness Correction (B-Value)
+    # 步骤 5：B-value 厚度校正。
     def correct_thickness(self, ds: xr.Dataset) -> tuple[xr.Dataset, dict]:  # noqa: PLR0914
-        """Apply B-Value correction for thickness effects."""
+        """应用 B-value 方法校正厚度效应。"""
         ds = ds.copy(deep=True)
         results = {}
 
         work_da = ds["background_removed"] if "background_removed" in ds else (ds["denoised"] if "denoised" in ds else ds["optical_density"])
 
-        # Calculate sum image to find thin/thick regions
+        # 通过积分强度图寻找薄区和厚区。
         intensity_map = work_da.sum(dim=ENERGY)
         flat_int = intensity_map.values.flatten()
         flat_int = flat_int[~np.isnan(flat_int)]
@@ -456,7 +439,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
                     arg = xr.where(arg > 1e-9, arg, 1e-9)
                     ds["thickness_corrected"] = -np.log(arg)
                 except Exception as e:
-                    logger.warning("B-Value correction failed: %s", e)
+                    logger.warning("B-value 厚度校正失败: %s", e)
                     ds["thickness_corrected"] = work_da
             else:
                 ds["thickness_corrected"] = work_da
@@ -465,19 +448,19 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
         return ds, results
 
-    # Step 6: ROI Selection
+    # 步骤 6：ROI 选择。
     def apply_rois(self, ds: xr.Dataset) -> xr.Dataset:
-        """Apply ROI selections (Spectral mapping and Spatial extraction)."""
+        """应用谱区 ROI 和空间 ROI。"""
         ds = ds.copy(deep=True)
         work_da = ds.get("thickness_corrected", ds.get("background_removed", ds.get("denoised", ds.get("optical_density"))))
 
-        # 1. Spectral ROIs -> Image Maps
+        # 1. 谱区 ROI 生成图像映射。
         rois_to_process = {}
-        # Legacy
+        # 旧接口保留为内部配置项，后续可删除。
         if self.roi_ranges:
             for start, end in self.roi_ranges:
                 rois_to_process[f"roi_{start}_{end}"] = (start, end)
-        # New dict
+        # 新接口：按名称传入 ROI 范围。
         for name, rng in self.roi_maps.items():
             if len(rng) >= 2:
                 rois_to_process[name] = (rng[0], rng[1])
@@ -489,25 +472,24 @@ class STXMAnalyzer(TechniqueAnalyzer):
                 roi_map = work_da.sel({ENERGY: slice(s, e)}).mean(dim=ENERGY)
                 ds[name] = roi_map
 
-        # 2. Spatial ROIs -> Spectra
+        # 2. 空间 ROI 生成平均谱。
         if self.spatial_rois:
             for name, coords in self.spatial_rois.items():
                 if len(coords) >= 4:
                     x1, x2, y1, y2 = sorted(coords[0:2]) + sorted(coords[2:4])
                     try:
                         y_dim, x_dim = self._get_spatial_dims(work_da)
-                        # Assume coords are indices/pixels for simplicity or consistent with previous usage
-                        # If using sel() with slices, xarray includes bounds.
+                        # 这里假设坐标为索引或像素坐标；xarray.sel 的 slice 会包含边界。
                         roi_spec = work_da.sel({x_dim: slice(x1, x2), y_dim: slice(y1, y2)}).mean(dim=[y_dim, x_dim])
                         ds[f"spectrum_{name}"] = roi_spec
                     except Exception as e:
-                        logger.warning("Spatial ROI %s processing failed: %s", name, e)
+                        logger.warning("空间 ROI %s 处理失败: %s", name, e)
 
         return ds
 
-    # Step 7: Clustering (UMAP + Sklearn)
+    # 步骤 7：UMAP 和 sklearn 聚类。
     def cluster_analysis(self, ds: xr.Dataset) -> tuple[xr.Dataset, dict]:  # noqa: PLR0912, PLR0915, PLR0914
-        """Perform clustering analysis (UMAP and/or KMeans/DBSCAN/GMM)."""
+        """执行 UMAP 降维和 KMeans/DBSCAN/GMM 聚类。"""
         ds = ds.copy(deep=True)
         results = {}
         work_da = ds.get("thickness_corrected", ds.get("background_removed", ds.get("denoised", ds.get("optical_density"))))
@@ -525,7 +507,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
         if len(data_for_clustering) == 0:
             return ds, results
 
-        # UMAP
+        # UMAP 降维。
         if self.use_umap:
             try:
                 reducer = umap.UMAP(
@@ -547,9 +529,9 @@ class STXMAnalyzer(TechniqueAnalyzer):
                 y_dim, x_dim = self._get_spatial_dims(work_da)
                 ds["umap_embeddings"] = ((y_dim, x_dim, "umap_component"), full_embedding)
             except Exception as e:
-                logger.warning("UMAP embedding failed: %s", e)
+                logger.warning("UMAP 嵌入失败: %s", e)
 
-        # Clustering
+        # 聚类。
         if len(data_for_clustering) > self.n_clusters:
             try:
                 labels_valid = None
@@ -580,14 +562,14 @@ class STXMAnalyzer(TechniqueAnalyzer):
                     labels_valid = model.fit_predict(data_for_clustering)
                     unique_labels = set(labels_valid)
                     centroids_list = []
-                    # DBSCAN labels -1 is noise
+                    # DBSCAN 中标签 -1 表示噪声点。
                     valid_labels_sorted = sorted({lbl for lbl in unique_labels if lbl != -1})
                     for lbl in valid_labels_sorted:
                         centroids_list.append(data_for_clustering[labels_valid == lbl].mean(axis=0))
                     centroids = np.array(centroids_list) if centroids_list else None
 
                 else:
-                    logger.warning("Unknown clustering method %s, falling back to KMeans", method)
+                    logger.warning("未知聚类方法 %s，回退到 KMeans。", method)
                     model = KMeans(n_clusters=self.n_clusters)
                     labels_valid = model.fit_predict(data_for_clustering)
                     centroids = model.cluster_centers_
@@ -603,13 +585,13 @@ class STXMAnalyzer(TechniqueAnalyzer):
                         results["cluster_centroids"] = centroids
 
             except Exception as e:
-                logger.warning("Clustering failed: %s", e)
+                logger.warning("聚类失败: %s", e)
 
         return ds, results
 
-    # Step 8: Pixel-wise Fitting (and Spectrum Fitting)
+    # 步骤 8：像素级拟合和谱图拟合。
     def fit_pixels(self, ds: xr.Dataset, cluster_centroids: np.ndarray | None = None) -> tuple[xr.Dataset, dict]:  # noqa: PLR0912, PLR0914
-        """Perform fitting on identified spectra (ROIs or Clusters)."""
+        """对 ROI 或聚类得到的谱图执行拟合。"""
         ds = ds.copy(deep=True)
         results = {}
         fit_results = {}
@@ -627,13 +609,13 @@ class STXMAnalyzer(TechniqueAnalyzer):
             try:
                 composite, params = build_lmfit_model(config)
             except ValueError as e:
-                logger.warning("Skipping model %s: %s", model_name, e)
+                logger.warning("跳过模型 %s: %s", model_name, e)
                 continue
 
             if composite is None:
                 continue
 
-            # Identify targets
+            # 识别拟合目标。
             spectra_to_fit = {}
 
             if "cluster_centroids" in targets and cluster_centroids is not None:
@@ -645,7 +627,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
                     da_spec = ds[target]
                     spectra_to_fit[target] = (da_spec.coords[ENERGY].values, da_spec.values)
 
-            # Perform Fitting
+            # 执行拟合。
             model_fits = {}
             for spec_name, (x, y) in spectra_to_fit.items():
                 if fit_range:
@@ -661,7 +643,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
                 try:
                     result = composite.fit(y_fit, params, x=x_fit)
 
-                    # Extract params for backward compatibility
+                    # 提取有序参数，便于后续结果消费。
                     ordered_values = []
                     for pname in result.params:
                         ordered_values.append(result.params[pname].value)
@@ -673,29 +655,29 @@ class STXMAnalyzer(TechniqueAnalyzer):
                         "fitted_curve": (x_fit, result.best_fit),
                     }
 
-                    # Evaluate on full range
+                    # 在完整范围上计算拟合曲线。
                     y_full_calc = composite.eval(result.params, x=x)
                     da_fit = xr.DataArray(y_full_calc, coords={ENERGY: x}, dims=ENERGY, name=f"fit_{model_name}_{spec_name}")
                     ds[f"fit_{model_name}_{spec_name}"] = da_fit
 
                 except Exception as e:
-                    logger.warning("Fitting %s to %s failed: %s", model_name, spec_name, e)
+                    logger.warning("模型 %s 拟合 %s 失败: %s", model_name, spec_name, e)
 
             fit_results[model_name] = model_fits
 
         results["fitting_results"] = fit_results
         return ds, results
 
-    # Step 9: Chemical Mapping (NNLS)
+    # 步骤 9：NNLS 化学组分映射。
     def map_chemical_components(self, ds: xr.Dataset, references: dict[str, np.ndarray]) -> tuple[xr.Dataset, dict]:  # noqa: PLR0914
-        """Perform Linear Combination Fitting (NNLS) to map chemical components.
+        """通过非负最小二乘（NNLS）映射化学组分。
 
         Args:
-            ds: Dataset containing the data (usually 'thickness_corrected' or 'denoised')
-            references: Dictionary of {component_name: spectrum_array}
+            ds: 包含待处理数据的 Dataset，通常使用 thickness_corrected 或 denoised
+            references: 组分名到参考谱数组的映射
 
         Returns:
-            Updated Dataset with component maps and residuals.
+            添加组分图和残差图后的 Dataset，以及结果字典。
         """
         ds = ds.copy(deep=True)
         results = {}
@@ -705,10 +687,10 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
         work_da = ds.get("thickness_corrected", ds.get("background_removed", ds.get("denoised", ds.get("optical_density"))))
 
-        # Align references to data energy
+        # 将参考谱对齐到数据能量轴。
         energy = work_da.coords[ENERGY].values
 
-        # Build design matrix A (n_energy, n_components)
+        # 构建设计矩阵 A，形状为 (n_energy, n_components)。
         component_names = sorted(references.keys())
         design_matrix_list = []
         valid_refs = []
@@ -716,8 +698,8 @@ class STXMAnalyzer(TechniqueAnalyzer):
         for name in component_names:
             ref_spec = references[name]
             if len(ref_spec) != len(energy):
-                # Simple check, in production might need interpolation
-                logger.warning("Reference %s length %d mismatch with energy %d. Skipping.", name, len(ref_spec), len(energy))
+                # 当前先做长度检查；后续可补充参考谱插值。
+                logger.warning("参考谱 %s 长度 %d 与能量轴长度 %d 不一致，已跳过。", name, len(ref_spec), len(energy))
                 continue
             design_matrix_list.append(ref_spec)
             valid_refs.append(name)
@@ -727,7 +709,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
         design_matrix = np.column_stack(design_matrix_list)  # (n_energy, n_components)
 
-        # Prepare data B (n_energy, n_pixels)
+        # 准备数据矩阵 B，形状为 (n_energy, n_pixels)。
         if ENERGY in work_da.dims and work_da.dims[0] != ENERGY:
             work_da = work_da.transpose(ENERGY, ...)
 
@@ -735,23 +717,17 @@ class STXMAnalyzer(TechniqueAnalyzer):
         n_energy = original_shape[0]
         flat_data = work_da.values.reshape(n_energy, -1)  # (n_energy, n_pixels)
 
-        # NNLS for each pixel
-        # Solves min|| Ax - b ||_2 for x >= 0
-        # Scipy nnls is for single vector. For matrix, we loop or use optimization.
-        # Since this can be slow, we iterate.
+        # 对每个像素求解 NNLS：min||Ax - b||_2 且 x >= 0。
+        # scipy.optimize.nnls 处理单个向量，因此这里逐像素迭代。
 
         n_pixels = flat_data.shape[1]
         n_comps = len(valid_refs)
         maps = np.zeros((n_comps, n_pixels))
         residuals = np.zeros(n_pixels)
 
-        # mask nans
+        # 排除包含 NaN 的像素。
         mask_nan = np.isnan(flat_data).any(axis=0)
         valid_indices = np.where(~mask_nan)[0]
-
-        # Optimization: Pre-compute if possible?
-        # NNLS is iterative, hard to vectorize simply without external libs like cvxopt or special solvers.
-        # We'll use a loop for now, maybe optimized later.
 
         for idx in valid_indices:
             b = flat_data[:, idx]
@@ -759,14 +735,14 @@ class STXMAnalyzer(TechniqueAnalyzer):
             maps[:, idx] = x
             residuals[idx] = rnorm
 
-        # Reshape back to images
+        # 还原为空间图像。
         y_dim, x_dim = self._get_spatial_dims(work_da)
         ny, nx = original_shape[1], original_shape[2]
 
         reshaped_maps = maps.reshape(n_comps, ny, nx)
         reshaped_resid = residuals.reshape(ny, nx)
 
-        # Store in Dataset
+        # 写回 Dataset。
         for i, name in enumerate(valid_refs):
             ds[f"map_{name}"] = ((y_dim, x_dim), reshaped_maps[i])
 
@@ -775,52 +751,48 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
         return ds, results
 
-    def _compute(self, raw_data: RawData) -> tuple[AnalysisData, AnalysisDataInfo]:
-        """Execute the full STXM analysis workflow."""
-        ds = raw_data.data.copy(deep=True)
+    def _compute(self, bundle: DataBundle) -> AnalysisBundle:
+        """执行完整 STXM/TXM 分析流程。"""
+        ds = bundle.data.copy(deep=True)
         results = {}
         params_dict = {}
 
-        # 1. Denoising
+        # 1. 去噪。
         ds, pca_info = self.denoise_pca(ds)
         results.update(pca_info)
         if "pca_components" in pca_info:
             params_dict["pca_components"] = pca_info["pca_components"]
 
-        # 2. Background Removal
+        # 2. 背景扣除。
         ds = self.remove_background(ds)
 
-        # 3. Thickness Correction
+        # 3. 厚度校正。
         ds, bval_info = self.correct_thickness(ds)
         results.update(bval_info)
         if "b_value" in bval_info:
             params_dict["b_value"] = bval_info["b_value"]
             params_dict["c_value"] = bval_info["c_value"]
 
-        # 4. ROI
+        # 4. ROI 处理。
         ds = self.apply_rois(ds)
 
-        # 5. Clustering
+        # 5. 聚类。
         ds, clust_info = self.cluster_analysis(ds)
         results.update(clust_info)
 
-        # 6. Fitting (Peak Fitting)
+        # 6. 峰拟合。
         centroids = clust_info.get("cluster_centroids")
         ds, fit_info = self.fit_pixels(ds, cluster_centroids=centroids)
         results.update(fit_info)
 
-        # 7. Chemical Mapping (NNLS using Cluster Centroids as references)
-        # This allows "auto-mapping" based on identified clusters
+        # 7. 使用聚类中心作为参考谱执行 NNLS 化学映射。
         if centroids is not None:
-            # Create reference dict from centroids
-            # centroids shape: (n_clusters, n_energy)
+            # centroids 形状为 (n_clusters, n_energy)。
             refs = {f"Cluster_{i}": centroid for i, centroid in enumerate(centroids)}
             ds, map_info = self.map_chemical_components(ds, refs)
             results.update(map_info)
 
-        analysis_data = AnalysisData(data=ds)
         if results:
             params_dict["step_results"] = results
-        analysis_info = AnalysisDataInfo(parameters=params_dict)
 
-        return analysis_data, analysis_info
+        return AnalysisBundle(data=ds, meta=bundle.meta.copy(), parameters=params_dict)

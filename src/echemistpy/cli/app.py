@@ -1,4 +1,4 @@
-"""Typer application for the echemistpy command."""
+"""echemistpy 命令行应用。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def _formats_command(domain: str):
         formats(domain=domain)
 
     command.__name__ = f"{domain}_formats"
-    command.__doc__ = f"Print supported {domain.upper()} reader formats."
+    command.__doc__ = f"打印支持的 {domain.upper()} reader 格式。"
     return command
 
 
@@ -32,7 +32,7 @@ for _domain in ("echem", "xas", "xrd", "txm"):
 
 
 def main() -> None:
-    """Run the echemistpy CLI."""
+    """运行 echemistpy CLI。"""
     app()
 
 

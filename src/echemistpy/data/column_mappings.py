@@ -1,4 +1,4 @@
-"""Standard column name mappings for data standardization.
+"""数据标准化使用的标准列名映射。
 
 本模块定义了不同技术和仪器的标准列名映射关系。
 映射按照功能模块化组织，便于维护和扩展。

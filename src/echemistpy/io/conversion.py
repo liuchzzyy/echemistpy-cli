@@ -1,11 +1,11 @@
-"""Data conversion helpers."""
+"""数据格式转换辅助函数。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from echemistpy.data.storage import save_combined, save_data
 from echemistpy.io.loaders import load
+from echemistpy.io.writer import write_bundle
 
 
 def convert_data(
@@ -16,21 +16,16 @@ def convert_data(
     instrument: str | None = None,
     standardize: bool = True,
 ) -> Path:
-    """Load source data and write it to a supported output format."""
+    """加载源数据并写出为支持的目标格式。"""
     output_path = Path(output)
-    raw_data, raw_info = load(
+    bundle = load(
         source,
         fmt=fmt,
         instrument=instrument,
         standardize=standardize,
     )
 
-    suffix = output_path.suffix.lower().lstrip(".")
-    if suffix in {"nc", "netcdf"}:
-        save_combined(raw_data, raw_info, output_path)
-    else:
-        save_data(raw_data, output_path)
-    return output_path
+    return write_bundle(bundle, output_path)
 
 
 __all__ = ["convert_data"]

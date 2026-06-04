@@ -20,13 +20,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from traitlets import Bool, Dict, HasTraits
-
 from echemistpy.io.contracts import ReaderSpec
 
 
-class IOPluginManager(HasTraits):
-    """IO 插件管理器，使用 traitlets 管理插件注册。
+class IOPluginManager:
+    """IO 插件管理器。
 
     采用单例模式，确保全局只有一个插件管理器实例。
     支持多种文件格式和仪器的插件注册。
@@ -42,11 +40,13 @@ class IOPluginManager(HasTraits):
         >>> reader_class = pm.get_loader('.csv')
     """
 
-    _instance = None
+    _instance: IOPluginManager | None = None
 
-    loaders = Dict(help="字典，映射文件扩展名到加载器类列表")
-    savers = Dict(help="字典，映射格式名称到保存器类")
-    initialized = Bool(False, help="默认插件是否已初始化")
+    def __init__(self) -> None:
+        """初始化空的插件注册表。"""
+        self.loaders: dict[str, list[Any]] = {}
+        self.savers: dict[str, Any] = {}
+        self.initialized = False
 
     @classmethod
     def get_instance(cls) -> IOPluginManager:
@@ -66,26 +66,16 @@ class IOPluginManager(HasTraits):
             extensions: 文件扩展名列表（如 ['.mpt', '.mpr']）
             loader_class: 处理这些文件的类或工厂函数
         """
-        # 批量收集所有更改，一次性更新 traitlets
-        updates = {}
         for ext in extensions:
             ext_clean = ext.lower()
             if not ext_clean.startswith("."):
                 ext_clean = f".{ext_clean}"
 
-            # 获取当前扩展的加载器列表
-            current_list = list(self.loaders.get(ext_clean, []))
+            current_list = self.loaders.setdefault(ext_clean, [])
 
             # 避免重复注册
             if loader_class not in current_list:
                 current_list.append(loader_class)
-                updates[ext_clean] = current_list
-
-        # 一次性更新所有更改
-        if updates:
-            new_loaders = dict(self.loaders)
-            new_loaders.update(updates)
-            self.loaders = new_loaders
 
     def register_saver(self, formats: list[str], saver_class: Any) -> None:
         """为指定的格式注册保存器类。
@@ -94,14 +84,12 @@ class IOPluginManager(HasTraits):
             formats: 格式名称列表（如 ['csv', 'json']）
             saver_class: 处理数据保存的类或工厂函数
         """
-        current_savers = dict(self.savers)
         for fmt in formats:
-            current_savers[fmt.lower()] = saver_class
-        self.savers = current_savers
+            self.savers[fmt.lower()] = saver_class
 
     @staticmethod
     def _reader_spec(loader_cls: Any) -> ReaderSpec | None:
-        """Return the declared reader spec for a loader class."""
+        """返回 reader 类声明的能力信息。"""
         spec = getattr(loader_cls, "spec", None)
         return spec if isinstance(spec, ReaderSpec) else None
 
@@ -188,7 +176,7 @@ class IOPluginManager(HasTraits):
         return instruments
 
     def list_reader_specs(self) -> list[ReaderSpec]:
-        """Return declared specs for all registered readers."""
+        """返回所有已注册 reader 的能力声明。"""
         specs: list[ReaderSpec] = []
         seen: set[type] = set()
         for loaders in self.loaders.values():

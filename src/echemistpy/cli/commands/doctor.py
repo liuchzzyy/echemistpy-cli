@@ -1,4 +1,4 @@
-"""Doctor command."""
+"""运行环境检查命令。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import typer
 
 
 def check_runtime() -> list[tuple[str, str, Any]]:
-    """Return core runtime checks without importing analysis modules."""
+    """返回核心运行环境检查结果，不导入分析模块。"""
     checks: list[tuple[str, str, Any]] = []
 
     try:
@@ -47,7 +47,7 @@ def check_runtime() -> list[tuple[str, str, Any]]:
 
 
 def doctor() -> None:
-    """Print runtime checks."""
+    """打印运行环境检查结果。"""
     checks = check_runtime()
     for state, label, detail in checks:
         suffix = f" {detail}" if detail else ""

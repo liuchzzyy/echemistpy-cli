@@ -17,11 +17,10 @@
 from __future__ import annotations
 
 import warnings
-from typing import Any, ClassVar, Dict, Optional, Tuple
+from typing import Any, ClassVar, Optional
 
 import numpy as np
 import xarray as xr
-from traitlets import HasTraits, Instance, List, Unicode
 
 from echemistpy.data.column_mappings import (
     ECHEM_PREFERRED_ORDER,
@@ -32,14 +31,11 @@ from echemistpy.data.column_mappings import (
     get_xps_mappings,
     get_xrd_mappings,
 )
-from echemistpy.data.models import (
-    RawData,
-    RawDataInfo,
-)
+from echemistpy.data.models import DataBundle
 from echemistpy.data.utils import sanitize_variable_names
 
 
-class DataStandardizer(HasTraits):
+class DataStandardizer:
     """数据标准化器，将原始数据转换为 echemistpy 标准格式。
 
     功能：
@@ -52,10 +48,6 @@ class DataStandardizer(HasTraits):
         techniques: 技术类型列表（如 ['echem', 'peis']）
         instrument: 仪器标识符（可选）
     """
-
-    dataset = Instance(xr.Dataset, help="待标准化的数据集")
-    techniques = List(Unicode(), help="技术类型标识符列表（如 ['echem', 'peis']）")
-    instrument = Unicode(None, allow_none=True, help="仪器标识符")
 
     # 电化学技术类别（用于映射分组）
     ECHEM_TECHNIQUES: ClassVar[set[str]] = {
@@ -85,19 +77,19 @@ class DataStandardizer(HasTraits):
             dataset: 待标准化的数据集
             techniques: 技术类型（字符串或列表）
             instrument: 可选的仪器标识符
-            **kwargs: 其他 traitlets 参数
+            **kwargs: 保留参数；当前不支持额外配置
         """
+        if kwargs:
+            extra = ", ".join(sorted(kwargs))
+            raise TypeError(f"DataStandardizer 不支持参数: {extra}")
         if isinstance(techniques, str):
             techniques = [techniques]
-        super().__init__(
-            dataset=dataset.copy(deep=True),
-            techniques=[t.lower() for t in techniques],
-            instrument=instrument,
-            **kwargs,
-        )
+        self.dataset = dataset.copy(deep=True)
+        self.techniques = [t.lower() for t in techniques]
+        self.instrument = instrument
 
-    @staticmethod
-    def _get_mappings_for_technique(tech: str) -> dict[str, str]:
+    @classmethod
+    def _get_mappings_for_technique(cls, tech: str) -> dict[str, str]:
         """获取指定技术的列名映射。
 
         Args:
@@ -107,6 +99,8 @@ class DataStandardizer(HasTraits):
             列名映射字典
         """
         tech_category = tech.lower()
+        if tech_category in cls.ECHEM_TECHNIQUES:
+            return get_echem_mappings()
 
         # 根据技术类别获取映射
         mapping_getters = {
@@ -171,29 +165,15 @@ class DataStandardizer(HasTraits):
         if custom_mapping:
             mapping.update(custom_mapping)
 
-        # 应用重命名
-        rename_dict = {}
-        # 检查数据变量和坐标
-        all_names = list(self.dataset.data_vars) + list(self.dataset.coords)
-        planned_names = set(all_names)
+        # 应用重命名。若目标名已存在，只有源/目标数据等价时才去重；
+        # 否则保留源数据并分配唯一后缀名，避免静默丢列。
+        desired_renames = {}
+        all_names = [str(name) for name in list(self.dataset.data_vars) + list(self.dataset.coords)]
         for name in all_names:
-            old_name = str(name)
-            if old_name in mapping:
-                new_name = mapping[old_name]
-                if new_name != old_name:
-                    # 避免冲突
-                    if new_name in self.dataset or new_name in rename_dict.values() or new_name in planned_names:
-                        # 如果目标名称已存在且数据相同，删除旧变量
-                        if old_name in self.dataset:
-                            self.dataset = self.dataset.drop_vars(old_name)
-                        planned_names.discard(old_name)
-                        continue
-                    rename_dict[old_name] = new_name
-                    planned_names.discard(old_name)
-                    planned_names.add(new_name)
+            if name in mapping and mapping[name] != name:
+                desired_renames[name] = mapping[name]
 
-        if rename_dict:
-            self.dataset = self.dataset.rename(rename_dict)
+        self._apply_renames(desired_renames)
 
         # 按首选顺序重排变量
         self._reorder_variables()
@@ -212,11 +192,79 @@ class DataStandardizer(HasTraits):
             # 添加不在首选列表中的其他变量
             other_vars = [v for v in self.dataset.data_vars if v not in preferred]
             # 重排
-            self.dataset = self.dataset[existing_vars + other_vars]  # type: ignore
+            self.dataset = self.dataset[existing_vars + other_vars]
             break  # 只应用第一个技术的顺序
 
+    def _apply_renames(self, desired_renames: dict[str, str]) -> None:
+        """安全重命名，保留不等价的冲突列。"""
+        if not desired_renames:
+            return
+
+        rename_dict: dict[str, str] = {}
+        drop_names: list[str] = []
+        planned_names = self._all_names()
+
+        for old_name, requested_name in desired_renames.items():
+            if old_name not in planned_names or requested_name == old_name:
+                continue
+
+            planned_names.discard(old_name)
+            if requested_name in planned_names:
+                if self._has_name(requested_name) and self._variables_equal(old_name, requested_name):
+                    drop_names.append(old_name)
+                    continue
+                new_name = self._unique_name(requested_name, planned_names)
+            else:
+                new_name = requested_name
+
+            rename_dict[old_name] = new_name
+            planned_names.add(new_name)
+
+        if drop_names:
+            self.dataset = self.dataset.drop_vars(drop_names)
+        if rename_dict:
+            self.dataset = self.dataset.rename(rename_dict)
+
+    def _all_names(self) -> set[str]:
+        """返回所有变量名和坐标名。"""
+        return {str(name) for name in list(self.dataset.data_vars) + list(self.dataset.coords)}
+
+    def _has_name(self, name: str) -> bool:
+        """判断变量或坐标是否存在。"""
+        return name in self.dataset.data_vars or name in self.dataset.coords
+
+    def _variables_equal(self, left: str, right: str) -> bool:
+        """判断两个变量或坐标是否承载等价数据。"""
+        if not (self._has_name(left) and self._has_name(right)):
+            return False
+
+        left_var = self.dataset[left]
+        right_var = self.dataset[right]
+        if left_var.dims != right_var.dims or left_var.shape != right_var.shape:
+            return False
+
+        if left_var.identical(right_var):
+            return True
+
+        try:
+            return bool(np.array_equal(left_var.values, right_var.values, equal_nan=True))
+        except TypeError:
+            return bool(np.array_equal(left_var.values, right_var.values))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _unique_name(base_name: str, used_names: set[str]) -> str:
+        """追加数字后缀生成唯一名称。"""
+        suffix = 1
+        candidate = f"{base_name}_{suffix}"
+        while candidate in used_names:
+            suffix += 1
+            candidate = f"{base_name}_{suffix}"
+        return candidate
+
     def standardize_units(self) -> "DataStandardizer":
-        """Convert units to standard echemistpy conventions."""
+        """将单位转换为 echemistpy 标准约定。"""
         renames = {}
         conversions = {}
 
@@ -231,7 +279,7 @@ class DataStandardizer(HasTraits):
             var_name = str(name)
             var_lower = var_name.lower()
 
-            # Handle time conversions. Keep canonical time_s as numeric seconds.
+            # 时间统一为秒，标准 time_s 保持数值秒。
             if var_name != "time_s" and ("time" in var_lower or var_name == "t"):
                 if "min" in var_lower and "mah" not in var_lower:
                     conversions[var_name] = lambda x: x * 60
@@ -240,7 +288,7 @@ class DataStandardizer(HasTraits):
                     conversions[var_name] = lambda x: x * 3600
                     renames[var_name] = var_name.replace("h", "s")
 
-            # Handle current conversions
+            # 电流单位统一。
             elif "current" in var_lower or var_name.startswith("I"):
                 if "/a" in var_lower or "_a" in var_lower:
                     conversions[var_name] = lambda x: x * 1000
@@ -249,12 +297,12 @@ class DataStandardizer(HasTraits):
                     conversions[var_name] = lambda x: x / 1000
                     renames[var_name] = replace_suffixes(var_name, {"/μA": "/ma", "/uA": "/ma", "/μa": "/ma", "/ua": "/ma"})
 
-            # Handle voltage conversions
+            # 电压单位统一。
             elif ("voltage" in var_lower or "potential" in var_lower or var_name.startswith("E")) and "/mv" in var_lower:
                 conversions[var_name] = lambda x: x / 1000
                 renames[var_name] = replace_suffixes(var_name, {"/mV": "/V", "/mv": "/V"})
 
-            # Handle capacity conversions
+            # 容量单位统一。
             elif ("capacity" in var_lower or var_name.startswith("Q")) and "/uah" in var_lower:
                 conversions[var_name] = lambda x: x / 1000
                 renames[var_name] = replace_suffixes(var_name, {"/uAh": "/mAh", "/uah": "/mAh"})
@@ -263,13 +311,12 @@ class DataStandardizer(HasTraits):
         for var_name, converter in conversions.items():
             self.dataset[var_name] = converter(self.dataset[var_name])
 
-        if renames:
-            self.dataset = self.dataset.rename(renames)
+        self._apply_renames(renames)
 
         return self
 
     def ensure_required_columns(self, required_columns: list[str]) -> "DataStandardizer":
-        """Ensure that required columns exist, creating placeholders if needed."""
+        """确保必需列存在，缺失时创建 NaN 占位列。"""
         missing_cols = []
         for col in required_columns:
             if col not in self.dataset.data_vars:
@@ -277,10 +324,10 @@ class DataStandardizer(HasTraits):
 
         if missing_cols:
             warnings.warn(
-                f"Missing required columns: {missing_cols}. Creating placeholders.",
+                f"缺少必需列: {missing_cols}。正在创建占位列。",
                 stacklevel=2,
             )
-            # Create placeholder columns with NaN values
+            # 使用 NaN 创建占位列。
             if "record" in self.dataset.coords:
                 n_rows = len(self.dataset.coords["record"])
                 for col in missing_cols:
@@ -293,85 +340,103 @@ class DataStandardizer(HasTraits):
         return self
 
     def get_dataset(self) -> xr.Dataset:
-        """Return the standardized dataset."""
+        """返回标准化后的数据集。"""
         return self.dataset
 
 
-def standardize_names(
-    raw_data: RawData,
-    raw_data_info: RawDataInfo,
+def standardize_bundle(
+    bundle: DataBundle,
     technique_hint: Optional[str | list[str]] = None,
-    custom_mapping: Optional[Dict[str, str]] = None,
+    custom_mapping: Optional[dict[str, str]] = None,
     required_columns: Optional[list[str]] = None,
-) -> Tuple[RawData, RawDataInfo]:
-    """Standardize data to consistent format.
+) -> DataBundle:
+    """标准化数据包并保留元数据。"""
+    techniques = _normalize_techniques(technique_hint or bundle.meta.get("technique") or ["unknown"])
 
-    Args:
-        raw_data: Input data
-        raw_data_info: Input metadata
-        technique_hint: Override technique detection (string or list of strings)
-        custom_mapping: Additional column name mappings
-        required_columns: List of columns that must be present
-
-    Returns:
-        Tuple of (RawData, RawDataInfo) with standardized data
-    """
-    # Extract dataset from RawData
-    if isinstance(raw_data.data, xr.Dataset):
-        # Determine techniques
-        techniques = technique_hint or raw_data_info.get("technique") or ["unknown"]
-        if isinstance(techniques, str):
-            techniques = [techniques]
-
-        # Standardize data
-        standardizer = DataStandardizer(dataset=raw_data.data, techniques=techniques, instrument=raw_data_info.instrument)
-        standardizer.standardize(custom_mapping)
-
-        if required_columns:
-            standardizer.ensure_required_columns(required_columns)
-
-        standardized_data = RawData(data=standardizer.get_dataset())
-    elif isinstance(raw_data.data, xr.DataTree):
-        # Determine global techniques
-        global_techniques = technique_hint or raw_data_info.get("technique") or ["unknown"]
-        if isinstance(global_techniques, str):
-            global_techniques = [global_techniques]
-
-        def _standardize_node(ds: xr.Dataset) -> xr.Dataset:
-            if not ds.data_vars:
-                return ds
-
-            # Use node-specific techniques if available, otherwise use global
-            node_techniques = ds.attrs.get("technique", global_techniques)
-            if isinstance(node_techniques, str):
-                node_techniques = [node_techniques]
-
-            s = DataStandardizer(dataset=ds, techniques=node_techniques, instrument=raw_data_info.instrument)
-            s.standardize(custom_mapping)
-            if required_columns:
-                s.ensure_required_columns(required_columns)
-
-            standardized_ds = s.get_dataset()
-
-            # Sanitize names for DataTree compatibility using utility function
-            # 强制转换为 Dataset，因为 sanitize_variable_names 返回 Union
-            result = sanitize_variable_names(standardized_ds)
-            return result if isinstance(result, xr.Dataset) else standardized_ds
-
-        standardized_tree = raw_data.data.map_over_datasets(_standardize_node)
-        standardized_data = RawData(data=standardized_tree)
-        techniques = global_techniques
+    if isinstance(bundle.data, xr.Dataset):
+        standardized = _standardize_dataset(
+            bundle.data,
+            techniques=techniques,
+            instrument=bundle.meta.instrument,
+            custom_mapping=custom_mapping,
+            required_columns=required_columns,
+        )
+    elif isinstance(bundle.data, xr.DataTree):
+        standardized = bundle.data.map_over_datasets(
+            lambda ds: _standardize_tree_node(
+                ds,
+                global_techniques=techniques,
+                instrument=bundle.meta.instrument,
+                custom_mapping=custom_mapping,
+                required_columns=required_columns,
+            )
+        )
     else:
-        raise ValueError("RawData must contain an xarray.Dataset or DataTree for standardization")
+        raise ValueError("DataBundle 必须包含 xarray.Dataset 或 DataTree 才能标准化。")
 
-    # Create standardized info
-    info = raw_data_info.copy()
-    info.technique = techniques
+    meta = bundle.meta.copy()
+    meta.technique = techniques
+    provenance = dict(bundle.provenance)
+    provenance["standardized"] = True
 
-    return standardized_data, info
+    return DataBundle(
+        data=standardized,
+        meta=meta,
+        schema=bundle.schema,
+        provenance=provenance,
+        warnings=list(bundle.warnings),
+    )
+
+
+def _normalize_techniques(techniques: str | list[str]) -> list[str]:
+    """将技术类型提示标准化为列表。"""
+    if isinstance(techniques, str):
+        return [techniques]
+    return list(techniques)
+
+
+def _standardize_dataset(
+    ds: xr.Dataset,
+    *,
+    techniques: list[str],
+    instrument: str | None,
+    custom_mapping: Optional[dict[str, str]],
+    required_columns: Optional[list[str]],
+) -> xr.Dataset:
+    """标准化单个 Dataset。"""
+    standardizer = DataStandardizer(dataset=ds, techniques=techniques, instrument=instrument)
+    standardizer.standardize(custom_mapping)
+    if required_columns:
+        standardizer.ensure_required_columns(required_columns)
+    return standardizer.get_dataset()
+
+
+def _standardize_tree_node(
+    ds: xr.Dataset,
+    *,
+    global_techniques: list[str],
+    instrument: str | None,
+    custom_mapping: Optional[dict[str, str]],
+    required_columns: Optional[list[str]],
+) -> xr.Dataset:
+    """标准化单个 DataTree 节点 Dataset。"""
+    if not ds.data_vars:
+        return ds
+
+    node_techniques = _normalize_techniques(ds.attrs.get("technique", global_techniques))
+    standardized_ds = _standardize_dataset(
+        ds,
+        techniques=node_techniques,
+        instrument=instrument,
+        custom_mapping=custom_mapping,
+        required_columns=required_columns,
+    )
+
+    result = sanitize_variable_names(standardized_ds)
+    return result if isinstance(result, xr.Dataset) else standardized_ds
 
 
 __all__ = [
     "DataStandardizer",
-    "standardize_names",
+    "standardize_bundle",
 ]

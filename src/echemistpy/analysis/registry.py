@@ -1,204 +1,160 @@
-"""Registries that keep track of available analyzers."""
+"""分析器注册表。"""
 
 from __future__ import annotations
 
-from abc import ABCMeta, abstractmethod
-from typing import Any, ClassVar
+import copy
+from abc import ABC, abstractmethod
+from typing import Any
 
-from traitlets import HasTraits, Instance, MetaHasTraits, Unicode
-from traitlets import List as TList
-
-from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData, RawDataInfo
+from echemistpy.data.models import AnalysisBundle, DataBundle
 
 
-class ABCMetaHasTraits(ABCMeta, MetaHasTraits):
-    """Metaclass combining ABC and HasTraits metaclasses."""
+class TechniqueAnalyzer(ABC):
+    """分析器基类。"""
 
-    pass
+    technique = ""
+    instrument: str | None = None
+    name = ""
 
+    def __init__(self, **kwargs: Any) -> None:
+        """复制类级配置并应用实例级覆盖。"""
+        for cls in reversed(self.__class__.mro()):
+            if not issubclass(cls, TechniqueAnalyzer):
+                continue
+            for key, value in vars(cls).items():
+                if key.startswith("_") or key in {"required_columns"}:
+                    continue
+                if isinstance(value, property | staticmethod | classmethod) or callable(value):
+                    continue
+                setattr(self, key, copy.deepcopy(value))
 
-class TechniqueAnalyzer(HasTraits, metaclass=ABCMetaHasTraits):
-    """Template used by all built-in analyzers."""
+        for key, value in kwargs.items():
+            if not hasattr(self, key):
+                raise TypeError(f"{self.__class__.__name__} 不支持参数: {key}")
+            setattr(self, key, value)
 
-    # 可从 RawDataInfo 继承到 AnalysisDataInfo 的元数据字段
-    INHERITABLE_METADATA_FIELDS: ClassVar[tuple[str, ...]] = (
-        "technique",
-        "sample_name",
-        "start_time",
-        "operator",
-        "instrument",
-        "active_material_mass",
-        "wave_number",
-    )
-
-    technique = Unicode(help="Technique identifier")
-    instrument = Unicode(None, allow_none=True, help="Instrument identifier")
-    name = Unicode(help="Analyzer name")
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
         if not self.name:
             self.name = self.__class__.__name__
 
     def analyze(
         self,
-        raw_data: RawData,
-        raw_info: RawDataInfo,
+        bundle: DataBundle,
         **kwargs: Any,  # noqa: ARG002
-    ) -> tuple[AnalysisData, AnalysisDataInfo]:
-        """Perform the full analysis workflow.
-
-        This includes validation, preprocessing, computation, and packaging.
-        Metadata from raw_info is carried over to the results.
-
-        Args:
-            raw_data: Standardized raw data container
-            raw_info: Metadata from the raw data (required for metadata inheritance)
-            **kwargs: Additional parameters (currently unused, for future extension)
-
-        Returns:
-            Tuple of (AnalysisData, AnalysisDataInfo)
-        """
-        # 1. Validate
-        self.validate(raw_data)
-
-        # 2. Preprocess (on a copy to avoid side effects)
-        cleaned = self.preprocess(raw_data.copy())
-
-        # 3. Compute (returns AnalysisData + AnalysisDataInfo)
-        analysis_data, analysis_info = self._compute(cleaned)
-
-        # 4. Inherit metadata from raw_info
-        # Copy standard metadata fields (explicitly exclude 'others' field)
-        # technique is also inherited from raw_info to preserve original data source information
-        for field in self.INHERITABLE_METADATA_FIELDS:
-            value = getattr(raw_info, field, None)
-            if value is not None:
-                setattr(analysis_info, field, value)
-
-        return analysis_data, analysis_info
+    ) -> AnalysisBundle:
+        """执行完整分析流程。"""
+        self.validate(bundle)
+        cleaned = self.preprocess(bundle.copy())
+        result = self._compute(cleaned)
+        result.meta = bundle.meta.copy()
+        result.warnings = [*bundle.warnings, *result.warnings]
+        provenance = dict(bundle.provenance)
+        provenance.update(result.provenance)
+        provenance["analyzer"] = self.name
+        result.provenance = provenance
+        return result
 
     @property
     @abstractmethod
     def required_columns(self) -> tuple[str, ...]:
-        """Columns that must be present in the data."""
+        """分析所需标准列。"""
 
-    def validate(self, raw_data: RawData) -> None:
-        """Check if raw_data contains all required columns.
-
-        Args:
-            raw_data: RawData instance to validate
-
-        Raises:
-            ValueError: If any required columns are missing
-        """
-        # For now, we check the root dataset variables and coordinates
-        available = set(raw_data.variables) | set(raw_data.coords)
+    def validate(self, bundle: DataBundle) -> None:
+        """检查数据包是否包含必需列。"""
+        available = set(bundle.variables) | set(bundle.coords)
         missing = [col for col in self.required_columns if col not in available]
         if missing:
-            raise ValueError(f"Analyzer '{self.name}' requires columns {self.required_columns}, but {missing} are missing from the data.")
+            raise ValueError(f"分析器 '{self.name}' 需要列 {self.required_columns}，但数据缺少 {missing}。")
 
-    def preprocess(self, raw_data: RawData) -> RawData:  # noqa: PLR6301
-        """Optional preprocessing step (e.g., filtering, normalization)."""
-        return raw_data
+    def preprocess(self, bundle: DataBundle) -> DataBundle:  # noqa: PLR6301
+        """可选预处理步骤。"""
+        return bundle
 
     @abstractmethod
-    def _compute(self, raw_data: RawData) -> tuple[AnalysisData, AnalysisDataInfo]:
-        """Perform the main calculation and return results (internal method).
-
-        Note:
-            This is an internal method. Users should call analyze() instead,
-            which handles validation, preprocessing, computation, and metadata inheritance.
-
-        Args:
-            raw_data: Preprocessed data container
-
-        Returns:
-            Tuple of (AnalysisData, AnalysisDataInfo) containing:
-            - AnalysisData: Processed data as xarray.Dataset or xarray.DataTree
-            - AnalysisDataInfo: Analysis parameters and metadata
-        """
+    def _compute(self, bundle: DataBundle) -> AnalysisBundle:
+        """执行核心计算并返回 AnalysisBundle。"""
 
 
-class TechniqueRegistry(HasTraits):
-    """Map technique and instrument identifiers to analyzer instances."""
+class TechniqueRegistry:
+    """将技术类型和仪器标识符映射到分析器实例。"""
 
-    _analyzers = TList(Instance(TechniqueAnalyzer), help="Internal list of registered analyzers")
+    def __init__(self, analyzers: list[TechniqueAnalyzer] | None = None) -> None:
+        """初始化分析器注册表。"""
+        self._analyzers = list(analyzers or [])
 
     def register(self, analyzer: TechniqueAnalyzer) -> None:
-        """Register an analyzer instance.
+        """注册分析器实例。
 
         Args:
-            analyzer: TechniqueAnalyzer instance
+            analyzer: TechniqueAnalyzer 实例
         """
         if analyzer not in self._analyzers:
             self._analyzers.append(analyzer)
 
     def unregister(self, analyzer: TechniqueAnalyzer) -> None:
-        """Unregister an analyzer instance.
+        """注销分析器实例。
 
         Args:
-            analyzer: TechniqueAnalyzer instance
+            analyzer: TechniqueAnalyzer 实例
         """
         if analyzer in self._analyzers:
             self._analyzers.remove(analyzer)
 
     def get_analyzer(self, technique: str, instrument: str | None = None) -> TechniqueAnalyzer:
-        """Get analyzer for a technique and optionally an instrument.
+        """按技术类型和可选仪器获取分析器。
 
         Args:
-            technique: Technique identifier (case-insensitive)
-            instrument: Optional instrument identifier (case-insensitive)
+            technique: 技术类型标识符（大小写不敏感）
+            instrument: 可选仪器标识符（大小写不敏感）
 
         Returns:
-            TechniqueAnalyzer instance
+            TechniqueAnalyzer 实例
 
         Raises:
-            KeyError: If no matching analyzer is found
+            KeyError: 未找到匹配分析器
         """
         tech_lower = technique.lower()
         inst_lower = instrument.lower() if instrument else None
 
-        # 1. Try specific instrument match
+        # 1. 优先匹配指定仪器。
         if inst_lower:
             for a in self._analyzers:
                 if a.technique.lower() == tech_lower and a.instrument and a.instrument.lower() == inst_lower:
                     return a
 
-        # 2. Try generic technique match (no instrument specified in analyzer)
+        # 2. 匹配通用技术类型分析器（分析器未声明仪器）。
         for a in self._analyzers:
             if a.technique.lower() == tech_lower and not a.instrument:
                 return a
 
-        # 3. Fallback to first technique match
+        # 3. 回退到第一个技术类型匹配项。
         for a in self._analyzers:
             if a.technique.lower() == tech_lower:
                 return a
 
-        raise KeyError(f"No analyzer registered for technique '{technique}'" + (f" and instrument '{instrument}'" if instrument else ""))
+        raise KeyError(f"未注册技术类型 '{technique}' 的分析器" + (f"，instrument='{instrument}'" if instrument else ""))
 
     def available(self) -> list[str]:
-        """Get list of registered techniques.
+        """返回已注册的技术类型列表。
 
         Returns:
-            List of available technique identifiers
+            可用技术类型标识符列表
         """
         return sorted({a.technique for a in self._analyzers})
 
     def __contains__(self, technique: str) -> bool:
-        """Check if technique is registered."""
+        """检查技术类型是否已注册。"""
         return any(a.technique.lower() == technique.lower() for a in self._analyzers)
 
     def __len__(self) -> int:
-        """Get number of registered analyzers."""
+        """返回已注册分析器数量。"""
         return len(self._analyzers)
 
 
 def create_default_registry() -> TechniqueRegistry:
-    """Return a registry populated with the built-in analyzers.
+    """返回包含内置分析器的注册表。
 
     Returns:
-        TechniqueRegistry with standard analyzers
+        包含标准分析器的 TechniqueRegistry
     """
     from .echem import GalvanostaticAnalyzer  # noqa: PLC0415
     from .stxm import STXMAnalyzer  # noqa: PLC0415

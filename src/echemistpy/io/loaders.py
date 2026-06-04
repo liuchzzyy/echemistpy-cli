@@ -12,11 +12,11 @@
 使用示例：
     >>> from echemistpy.io import load
     >>> # 自动检测格式 (需要文件存在)
-    >>> # raw_data, raw_info = load("data.mpt", sample_name="MySample")
+    >>> # bundle = load("data.mpt", sample_name="MySample")
     >>> # 指定仪器（对于有多个读取器的格式）
-    >>> # raw_data, raw_info = load("data.xlsx", instrument="lanhe")
+    >>> # bundle = load("data.xlsx", instrument="lanhe")
     >>> # 加载目录
-    >>> # raw_data, raw_info = load("./data_dir", instrument="biologic")
+    >>> # bundle = load("./data_dir", instrument="biologic")
 """
 
 from __future__ import annotations
@@ -27,13 +27,8 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from echemistpy.data.models import (
-    RawData,
-    RawDataInfo,
-)
-from echemistpy.data.standardize import (
-    standardize_names,
-)
+from echemistpy.data.models import DataBundle
+from echemistpy.data.standardize import standardize_bundle
 from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.plugin_manager import get_plugin_manager
 
@@ -60,9 +55,9 @@ def _instrument_extensions(instrument: str) -> list[str]:
 def _directory_extension(path: Path, instrument: str) -> str:
     matches = [ext for ext in _instrument_extensions(instrument) if any(path.rglob(f"*{ext}"))]
     if not matches:
-        raise ValueError(f"Could not determine loader for directory: {path}. Please specify 'instrument' or 'fmt'.")
+        raise ValueError(f"无法确定目录的 reader: {path}。请指定 instrument 或 fmt。")
     if len(matches) > 1:
-        raise ValueError(f"Multiple formats found for directory '{path}' and instrument '{instrument}': {matches}. Please specify 'fmt'.")
+        raise ValueError(f"目录 '{path}' 中找到多个匹配格式，instrument='{instrument}': {matches}。请指定 fmt。")
     return matches[0]
 
 
@@ -73,8 +68,8 @@ def load(
     instrument: Optional[str] = None,
     standardize: bool = True,
     **kwargs: Any,
-) -> tuple[RawData, RawDataInfo]:
-    """加载数据文件并返回标准化的 RawData 和 RawDataInfo。
+) -> DataBundle:
+    """加载数据文件并返回标准化的 DataBundle。
 
     Args:
         path: 数据文件路径
@@ -90,17 +85,17 @@ def load(
             - wave_number: 可选的波数覆盖
 
     Returns:
-        (RawData, RawDataInfo) 元组
+        DataBundle 数据包
 
     Raises:
-        ValueError: 如果目录加载未指定 instrument 或 fmt
-        ValueError: 如果找不到指定扩展名的加载器
-        ValueError: 如果多个加载器可用但未指定 instrument
-        ValueError: 如果指定的 instrument 没有匹配的加载器
+        ValueError: 如果目录加载未指定 instrument 或 fmt。
+        ValueError: 如果找不到指定扩展名的 reader。
+        ValueError: 如果多个 reader 可用但未指定 instrument。
+        ValueError: 如果指定的 instrument 没有匹配的 reader。
         FileNotFoundError: 如果文件不存在
-        RuntimeError: 如果读取器类未实现 load() 方法
+        RuntimeError: 如果 reader 类未实现 load() 方法。
     """
-    # Extract metadata overrides from kwargs
+    # 提取元数据覆盖项。
     overrides: dict[str, Any] = {
         "sample_name": kwargs.get("sample_name"),
         "start_time": kwargs.get("start_time"),
@@ -117,63 +112,61 @@ def load(
 
     pm = get_plugin_manager()
 
-    # For directory loading, instrument or fmt must be specified
+    # 目录加载必须指定 instrument 或 fmt。
     if path.is_dir() and not instrument and not fmt:
-        raise ValueError(f"Loading a directory requires specifying 'instrument' or 'fmt'. Path: {path}")
+        raise ValueError(f"加载目录必须指定 instrument 或 fmt。路径: {path}")
 
-    # If it's a directory and no extension is provided, we need to find a loader by instrument
+    # 目录路径没有扩展名时，通过 instrument 推断 reader 扩展名。
     if path.is_dir() and not ext and instrument:
         ext = _directory_extension(path, instrument)
 
-    # Check available instruments for this extension
+    # 查询该扩展名支持的仪器。
     available_instruments = pm.get_loader_instruments(ext)
 
     if not available_instruments:
         if path.is_dir():
-            raise ValueError(f"Could not determine loader for directory: {path}. Please specify 'instrument' or 'fmt'.")
-        raise ValueError(f"No loader registered for extension: {ext}")
+            raise ValueError(f"无法确定目录的 reader: {path}。请指定 instrument 或 fmt。")
+        raise ValueError(f"未注册扩展名对应的 reader: {ext}")
 
-    # If multiple loaders exist but no instrument is specified, prompt the user
+    # 同一扩展名有多个 reader 时必须显式指定 instrument。
     if instrument is None and len(available_instruments) > 1:
-        raise ValueError(f"Multiple loaders available for extension '{ext}'. Please specify 'instrument' to choose one.\nAvailable instruments: {available_instruments}")
+        raise ValueError(f"扩展名 '{ext}' 有多个 reader。请指定 instrument 进行选择。\n可用仪器: {available_instruments}")
 
     reader_class = pm.get_loader(ext, instrument=instrument)
 
     if reader_class is None:
-        # This happens if instrument was provided but didn't match any registered loader
-        raise ValueError(f"No loader found for extension '{ext}' with instrument '{instrument}'.\nAvailable instruments for this format: {available_instruments}")
+        # instrument 已提供但没有匹配 reader。
+        raise ValueError(f"未找到扩展名 '{ext}' 且 instrument='{instrument}' 的 reader。\n该格式可用仪器: {available_instruments}")
 
-    # Instantiate reader and load raw data
-    # Pass standard metadata to reader if provided
+    # 将标准元数据覆盖项传给 reader。
     for k, v in overrides.items():
         if v is not None:
             kwargs[k] = v
 
     reader = reader_class(filepath=path, **kwargs)
     if not hasattr(reader, "load"):
-        raise RuntimeError(f"Reader class {reader_class.__name__} does not implement 'load' method yet.")
+        raise RuntimeError(f"Reader 类 {reader_class.__name__} 尚未实现 load() 方法。")
 
-    # Pass kwargs to load() to support reader-specific parameters like 'edges'
-    raw_data, raw_info = reader.load(**kwargs)
+    # 将 kwargs 传给 load()，支持 edges 等 reader 特定参数。
+    bundle = reader.load(**kwargs)
 
-    # Filter out None values and apply manual overrides
-    raw_info.update({k: v for k, v in overrides.items() if v is not None})
+    # 应用手动覆盖项。
+    bundle.meta.update({k: v for k, v in overrides.items() if v is not None})
+    bundle.provenance.setdefault("source_path", str(path))
+    bundle.provenance.setdefault("source_format", ext)
 
     if not standardize:
-        return raw_data, raw_info
+        return bundle
 
-    # Auto-standardize
-    standardized_data, standardized_info = standardize_names(raw_data, raw_info, technique_hint=technique)
-
-    return standardized_data, standardized_info
+    return standardize_bundle(bundle, technique_hint=technique)
 
 
 def _register_loader(extensions: list[str], loader_class: Any) -> None:
-    """Register a new loader class for specific extensions.
+    """为指定扩展名注册 reader 类。
 
     Args:
-        extensions: List of file extensions (e.g., ['.mpt', '.xlsx'])
-        loader_class: The class to handle these files
+        extensions: 文件扩展名列表（例如 ['.mpt', '.xlsx']）
+        loader_class: 处理这些文件的类
     """
     pm = get_plugin_manager()
     pm.register_loader(extensions, loader_class)
@@ -185,7 +178,7 @@ def _register_loader(extensions: list[str], loader_class: Any) -> None:
 
 
 def list_supported_formats() -> dict[str, str]:
-    """Return a dictionary of supported file formats and their descriptions."""
+    """返回支持的文件格式及其说明。"""
     pm = get_plugin_manager()
     formats: dict[str, str] = {}
     for spec in pm.list_reader_specs():
@@ -198,7 +191,7 @@ def list_supported_formats() -> dict[str, str]:
 
 
 def list_reader_specs() -> tuple[ReaderSpec, ...]:
-    """Return declared reader capabilities."""
+    """返回已声明的 reader 能力。"""
     pm = get_plugin_manager()
     return tuple(pm.list_reader_specs())
 
@@ -209,7 +202,7 @@ def list_reader_specs() -> tuple[ReaderSpec, ...]:
 
 
 def _reader_spec(reader_class: type[Any]) -> ReaderSpec | None:
-    """Return the declared reader spec, if present."""
+    """返回 reader 类声明的 ReaderSpec。"""
     spec = getattr(reader_class, "spec", None)
     if isinstance(spec, ReaderSpec):
         return spec
@@ -217,7 +210,7 @@ def _reader_spec(reader_class: type[Any]) -> ReaderSpec | None:
 
 
 def _register_reader_classes(module: Any) -> None:
-    """Register reader classes declared by one plugin module."""
+    """注册一个插件模块中声明的 reader 类。"""
     from echemistpy.io.base_reader import BaseReader  # noqa: PLC0415
 
     pm = get_plugin_manager()
@@ -227,18 +220,18 @@ def _register_reader_classes(module: Any) -> None:
             continue
         spec = _reader_spec(attr)
         if spec is None:
-            warnings.warn(f"Reader {attr.__module__}.{attr.__name__} has no ReaderSpec and was not registered.", stacklevel=2)
+            warnings.warn(f"Reader {attr.__module__}.{attr.__name__} 未声明 ReaderSpec，已跳过注册。", stacklevel=2)
             continue
         pm.register_loader(list(spec.extensions), attr)
 
 
 def _initialize_default_plugins() -> None:
-    """Initialize and register default loader and saver plugins by scanning plugins directory."""
+    """扫描 plugins 目录并注册默认 reader 插件。"""
     pm = get_plugin_manager()
     if pm.initialized:
         return
 
-    # Dynamically discover and import plugins
+    # 动态发现并导入插件。
     import echemistpy.io.plugins as plugins_pkg  # noqa: PLC0415
 
     plugins_path = str(Path(plugins_pkg.__file__).parent) if plugins_pkg.__file__ else None
@@ -255,14 +248,14 @@ def _initialize_default_plugins() -> None:
             _register_reader_classes(module)
 
         except ImportError as e:
-            warnings.warn(f"Failed to load plugin {name}: {e}", stacklevel=2)
+            warnings.warn(f"加载插件失败 {name}: {e}", stacklevel=2)
         except Exception as e:
-            warnings.warn(f"Error initializing plugin {name}: {e}", stacklevel=2)
+            warnings.warn(f"初始化插件出错 {name}: {e}", stacklevel=2)
 
     pm.initialized = True
 
 
-# Initialize plugins on module import
+# 模块导入时初始化插件。
 _initialize_default_plugins()
 
 

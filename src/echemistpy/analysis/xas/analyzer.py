@@ -1,22 +1,32 @@
-"""XAS Analysis Module."""
+"""XAS 分析模块。"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import numpy as np
 import xarray as xr
-from traitlets import Dict, Unicode
 
 from echemistpy.analysis.registry import TechniqueAnalyzer
 from echemistpy.analysis.xas.processing import find_e0_by_derivative
-from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData
+from echemistpy.data.models import AnalysisBundle, DataBundle
+
+Group: Any
+autobk: Any
+pre_edge: Any
+xftf: Any
 
 try:
-    from larch import Group  # type: ignore
-    from larch.xafs import autobk, pre_edge, xftf  # type: ignore
+    from larch import Group as _LarchGroup
+    from larch.xafs import autobk as _autobk
+    from larch.xafs import pre_edge as _pre_edge
+    from larch.xafs import xftf as _xftf
 
+    Group = _LarchGroup
+    autobk = _autobk
+    pre_edge = _pre_edge
+    xftf = _xftf
     HAS_LARCH = True
 except ImportError:
     HAS_LARCH = False
@@ -29,10 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 class LarchXAS:
-    """Wrapper for XAS analysis functions using xraylarch.
+    """xraylarch 的 XAS 分析封装。
 
-    This class provides a consistent API for XAS analysis (normalization,
-    background removal, FFT) handling larch Group creation and error handling.
+    该类统一封装归一化、背景扣除和傅里叶变换，并集中处理 larch Group 创建。
     """
 
     def __init__(self, energy: np.ndarray, mu: np.ndarray, label: str = "sample"):
@@ -42,9 +51,9 @@ class LarchXAS:
         self.group: Any = None
 
         if HAS_LARCH:
-            self.group = Group(energy=energy, mu=mu, label=label)  # type: ignore
+            self.group = Group(energy=energy, mu=mu, label=label)
         else:
-            logger.warning("Larch not available. Analysis capabilities limited.")
+            logger.warning("未安装 Larch，XAS 分析能力受限。")
 
     def normalize(
         self,
@@ -56,11 +65,11 @@ class LarchXAS:
         norm1: Optional[float] = None,
         norm2: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Normalize spectrum (pre-edge subtraction)."""
+        """归一化谱图（扣除 pre-edge）。"""
         if not HAS_LARCH or self.group is None:
-            raise NotImplementedError("Normalization requires xraylarch.")
+            raise NotImplementedError("归一化需要安装 xraylarch。")
 
-        pre_edge(  # type: ignore
+        pre_edge(
             self.group,
             e0=e0,
             step=step,
@@ -80,11 +89,11 @@ class LarchXAS:
         }
 
     def remove_background(self, rbkg: float = 1.0, kmin: float = 0, kmax: float = 20, kweight: float = 2) -> dict[str, Any]:
-        """Remove background (AutoBK)."""
+        """使用 AutoBK 扣除背景。"""
         if not HAS_LARCH or self.group is None:
-            raise NotImplementedError("Background removal requires xraylarch.")
+            raise NotImplementedError("背景扣除需要安装 xraylarch。")
 
-        autobk(self.group, rbkg=rbkg, kmin=kmin, kmax=kmax, kweight=kweight)  # type: ignore
+        autobk(self.group, rbkg=rbkg, kmin=kmin, kmax=kmax, kweight=kweight)
         return {
             "k": getattr(self.group, "k", None),
             "chi": getattr(self.group, "chi", None),
@@ -98,11 +107,11 @@ class LarchXAS:
         kweight: float = 2,
         window: str = "hanning",
     ) -> dict[str, Any]:
-        """Perform FFT."""
+        """执行傅里叶变换。"""
         if not HAS_LARCH or self.group is None:
-            raise NotImplementedError("FFT requires xraylarch.")
+            raise NotImplementedError("FFT 需要安装 xraylarch。")
 
-        xftf(self.group, kmin=kmin, kmax=kmax, kweight=kweight, window=window)  # type: ignore
+        xftf(self.group, kmin=kmin, kmax=kmax, kweight=kweight, window=window)
         return {
             "r": getattr(self.group, "r", None),
             "chir": getattr(self.group, "chir", None),
@@ -113,28 +122,29 @@ class LarchXAS:
 
 
 class XASAnalyzer(TechniqueAnalyzer):
-    """Analyze X-ray Absorption Spectroscopy (XAS) data.
+    """分析 X 射线吸收谱（XAS）数据。
 
-    Performs normalization, background removal (AutoBK), and FFT using xraylarch.
+    使用 xraylarch 执行归一化、AutoBK 背景扣除和傅里叶变换。
     """
 
-    technique = Unicode("xas", help="Technique identifier")
+    technique = "xas"
 
-    # Configuration parameters
-    normalize_params = Dict(default_value={}, help="Parameters for normalization (e0, pre1, etc.)")
-    autobk_params = Dict(default_value={"rbkg": 1.0, "kweight": 2}, help="Parameters for AutoBK")
-    fft_params = Dict(default_value={"kmin": 2, "kmax": 12, "kweight": 2}, help="Parameters for FFT")
+    # 分析参数。
+    normalize_params: ClassVar[dict[str, Any]] = {}
+    autobk_params: ClassVar[dict[str, Any]] = {"rbkg": 1.0, "kweight": 2}
+    fft_params: ClassVar[dict[str, Any]] = {"kmin": 2, "kmax": 12, "kweight": 2}
 
-    # Theoretical E0 for finding edge
-    theoretical_e0 = Unicode(None, allow_none=True, help="Theoretical edge energy (optional)")
+    # 用于辅助寻找吸收边的理论 E0。
+    theoretical_e0: str | None = None
 
     @property
     def required_columns(self) -> tuple[str, ...]:
+        """返回 XAS 分析所需标准列。"""
         return ("energy_ev", "absorption")
 
     def _process_single_spectrum(self, energy: np.ndarray, mu: np.ndarray) -> dict[str, Any]:
-        """Helper to process a single 1D spectrum."""
-        # Ensure 1D and handle NaNs
+        """处理单条一维谱图。"""
+        # 保证输入为一维，并移除 NaN。
         if energy.ndim > 1:
             energy = energy.flatten()
         if mu.ndim > 1:
@@ -144,34 +154,34 @@ class XASAnalyzer(TechniqueAnalyzer):
         e_clean = energy[mask]
         mu_clean = mu[mask]
 
-        if len(e_clean) < 10:  # Too few points
+        if len(e_clean) < 10:
             return {}
 
         analyzer = LarchXAS(e_clean, mu_clean)
         results = {}
 
-        # 1. Normalize
+        # 1. 归一化。
         try:
             current_e0 = self.normalize_params.get("e0")
 
-            # Auto-find E0 if theoretical provided and explicit E0 missing
+            # 若提供理论 E0 且未显式指定 E0，则自动搜索。
             if current_e0 is None and self.theoretical_e0:
                 try:
                     theo_val = float(self.theoretical_e0)
                     current_e0 = find_e0_by_derivative(e_clean, mu_clean, theoretical_e0=theo_val, search_range=50.0)
                 except Exception as e:
-                    logger.warning("Constrained E0 search failed: %s", e)
+                    logger.warning("约束 E0 搜索失败: %s", e)
 
             res = analyzer.normalize(e0=current_e0, **self.normalize_params)
 
-            # Align result to original grid
+            # 将结果对齐回原始网格。
             norm_aligned = np.full_like(energy, np.nan)
             norm_aligned[mask] = res["norm"]
             results["norm_absorption"] = norm_aligned
             results["e0"] = res["e0"]
             results["edge_step"] = res["edge_step"]
         except Exception as e:
-            logger.warning("Normalization failed: %s", e)
+            logger.warning("归一化失败: %s", e)
 
         # 2. AutoBK
         try:
@@ -179,7 +189,7 @@ class XASAnalyzer(TechniqueAnalyzer):
             results["k"] = res["k"]
             results["chi_k"] = res["chi"]
         except Exception as e:
-            logger.warning("AutoBK failed: %s", e)
+            logger.warning("AutoBK 失败: %s", e)
 
         # 3. FFT
         try:
@@ -187,25 +197,25 @@ class XASAnalyzer(TechniqueAnalyzer):
             results["r"] = res["r"]
             results["chir_mag"] = res["chir_mag"]
         except Exception as e:
-            logger.warning("FFT failed: %s", e)
+            logger.warning("FFT 失败: %s", e)
 
         return results
 
-    def _compute(self, raw_data: RawData) -> tuple[AnalysisData, AnalysisDataInfo]:
-        ds = raw_data.data
+    def _compute(self, bundle: DataBundle) -> AnalysisBundle:
+        ds = bundle.data
         if isinstance(ds, xr.DataTree):
             ds = ds.dataset if ds.dataset is not None else xr.Dataset()
             if not ds.data_vars:
-                raise ValueError("DataTree root has no data variables.")
+                raise ValueError("DataTree 根节点没有数据变量。")
 
         if "energy_ev" not in ds.coords and "energy_ev" not in ds.data_vars:
-            raise ValueError("Dataset missing 'energy_ev'.")
+            raise ValueError("Dataset 缺少 'energy_ev'。")
         if "absorption" not in ds.data_vars:
-            raise ValueError("Dataset missing 'absorption'.")
+            raise ValueError("Dataset 缺少 'absorption'。")
 
         energy = ds.coords["energy_ev"].values if "energy_ev" in ds.coords else ds["energy_ev"].values
 
-        # Determine if multiple records
+        # 判断是否包含多条记录。
         has_record = "record" in ds.dims
 
         results_ds = ds.copy()
@@ -236,11 +246,11 @@ class XASAnalyzer(TechniqueAnalyzer):
                 mu_i = ds.absorption.isel(record=i).values
                 res = self._process_single_spectrum(energy, mu_i)
 
-                # Collect Scalars
+                # 收集标量结果。
                 e0_list.append(res.get("e0", np.nan))
                 edge_step_list.append(res.get("edge_step", np.nan))
 
-                # Collect Arrays
+                # 收集数组结果。
                 if "norm_absorption" in res:
                     norm_list.append(res["norm_absorption"])
                 else:
@@ -260,14 +270,14 @@ class XASAnalyzer(TechniqueAnalyzer):
                 else:
                     chir_list.append(None)
 
-            # Stack results
+            # 堆叠结果。
             if norm_list:
                 results_ds["norm_absorption"] = (("record", "energy_ev"), np.array(norm_list))
 
             results_ds["e0"] = (("record"), np.array(e0_list))
             results_ds["edge_step"] = (("record"), np.array(edge_step_list))
 
-            # Helper to stack jagged arrays
+            # 将不等长数组截断到共同长度后堆叠。
             def stack_jagged(data_list: list[Any], grid: Any, dim_name: str) -> Optional[xr.DataArray]:
                 if grid is None or not data_list:
                     return None
@@ -289,8 +299,5 @@ class XASAnalyzer(TechniqueAnalyzer):
             if chir_da is not None:
                 results_ds["chir_mag"] = chir_da
 
-        # Build Info
         params = {"normalize": self.normalize_params, "autobk": self.autobk_params, "fft": self.fft_params}
-        analysis_info = AnalysisDataInfo(parameters=params)
-
-        return AnalysisData(data=results_ds), analysis_info
+        return AnalysisBundle(data=results_ds, meta=bundle.meta.copy(), parameters=params)

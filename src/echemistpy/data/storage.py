@@ -5,7 +5,7 @@
 
 主要功能：
 - 数据保存：支持 .nc（NetCDF）和 .csv 格式
-- 元数据保存：将 Info 对象保存为 .dat（JSON 格式）
+- 元数据保存：将 bundle 元数据保存为 .dat（JSON 格式）
 - 组合保存：将数据和元数据一起保存到单个文件
 - 自定义编码：处理 datetime、Path 等特殊类型
 """
@@ -15,19 +15,22 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Sequence, cast
 
 import pandas as pd
 import xarray as xr
 
 from echemistpy.data.models import (
-    BaseData,
-    BaseInfo,
+    AnalysisBundle,
+    DataBundle,
+    Metadata,
 )
+
+Bundle = DataBundle | AnalysisBundle
 
 
 class MetadataEncoder(json.JSONEncoder):
-    """Custom JSON encoder for metadata containing datetime objects."""
+    """处理 datetime 和 Path 的 JSON 编码器。"""
 
     def default(self, o: Any) -> Any:
         if isinstance(o, (datetime, date)):
@@ -38,48 +41,114 @@ class MetadataEncoder(json.JSONEncoder):
 
 
 def _to_list(obj: Any) -> list[Any]:
-    """Convert object to list if it's not already a sequence."""
+    """将单个对象转为列表。"""
     if isinstance(obj, (list, tuple)):
         return list(obj)
     return [obj]
 
 
 def _sanitize_dataset(ds: xr.Dataset) -> xr.Dataset:
-    """Sanitize dataset variable and coordinate names for NetCDF saving.
-    Replaces '/' with '_' as NetCDF/HDF5 doesn't allow '/' in names.
-    Also handles timedelta64 encoding conflicts.
-    """
-    # 1. Rename variables with '/'
+    """清理 Dataset 名称和 attrs，避免 NetCDF 写出冲突。"""
+    # NetCDF/HDF5 不允许变量名中包含 "/"。
     rename_dict = {str(name): str(name).replace("/", "_") for name in list(ds.data_vars) + list(ds.coords) if "/" in str(name)}
     if rename_dict:
         ds = ds.rename(rename_dict)
 
-    # 2. Handle timedelta64 units conflict
+    # timedelta64 的 units 由 xarray 编码层处理。
     for var_name in list(ds.data_vars) + list(ds.coords):
         if ds[var_name].dtype.kind == "m" and "units" in ds[var_name].attrs:
-            # Remove units attribute to let xarray handle encoding
             del ds[var_name].attrs["units"]
 
     return ds
 
 
+def _sanitize_data(data: xr.Dataset | xr.DataTree) -> xr.Dataset | xr.DataTree:
+    """清理 Dataset 或 DataTree 内的所有 Dataset 节点。"""
+    if isinstance(data, xr.DataTree):
+        return data.map_over_datasets(_sanitize_dataset)
+    return _sanitize_dataset(data)
+
+
+def _metadata_to_attrs(metadata: Metadata) -> dict[str, Any]:
+    """将 Metadata 转为 NetCDF 友好的 attrs。"""
+    attrs: dict[str, Any] = {}
+    for k, v in metadata.to_dict().items():
+        if v is None:
+            continue
+        if isinstance(v, (str, int, float, bool)) or (isinstance(v, (list, tuple)) and all(isinstance(x, (str, int, float, bool)) for x in v)):
+            attrs[k] = v
+        else:
+            attrs[k] = json.dumps(v, ensure_ascii=False, cls=MetadataEncoder)
+    return attrs
+
+
+def _bundle_to_attrs(bundle: Bundle) -> dict[str, Any]:
+    """将 bundle 级信息转为 NetCDF 友好的 attrs。"""
+    attrs: dict[str, Any] = {"schema": bundle.schema}
+    if bundle.provenance:
+        attrs["provenance"] = json.dumps(bundle.provenance, ensure_ascii=False, cls=MetadataEncoder)
+    if bundle.warnings:
+        attrs["warnings"] = json.dumps(bundle.warnings, ensure_ascii=False, cls=MetadataEncoder)
+    if isinstance(bundle, AnalysisBundle) and bundle.parameters:
+        attrs["analysis_parameters"] = json.dumps(bundle.parameters, ensure_ascii=False, cls=MetadataEncoder)
+    return attrs
+
+
+def _with_attrs(data: xr.Dataset | xr.DataTree, attrs: dict[str, Any]) -> xr.Dataset | xr.DataTree:
+    """复制数据并将 attrs 写入根对象。"""
+    data = data.copy(deep=True)
+    data.attrs.update(attrs)
+    return data
+
+
+def _dataset_to_dataframe(ds: xr.Dataset) -> pd.DataFrame:
+    """将单个 Dataset 转为扁平表。"""
+    df = ds.to_dataframe()
+    if "record" in df.index.names or "row" in df.index.names:
+        df = df.reset_index(drop=True)
+    return df
+
+
+def _tree_to_dataframes(tree: xr.DataTree, node_path: str = "") -> list[pd.DataFrame]:
+    """将 DataTree 中每个有数据的节点转为表。"""
+    frames: list[pd.DataFrame] = []
+    if tree.dataset is not None and (tree.dataset.data_vars or tree.dataset.sizes):
+        df = _dataset_to_dataframe(tree.dataset)
+        df.insert(0, "__node__", node_path or "/")
+        frames.append(df)
+
+    for name, child in tree.children.items():
+        child_path = f"{node_path}/{name}" if node_path else f"/{name}"
+        frames.extend(_tree_to_dataframes(child, child_path))
+    return frames
+
+
+def _data_to_dataframes(data: xr.Dataset | xr.DataTree) -> list[pd.DataFrame]:
+    """将 Dataset 或 DataTree 转为一个或多个表。"""
+    if isinstance(data, xr.DataTree):
+        return _tree_to_dataframes(data)
+    return [_dataset_to_dataframe(data)]
+
+
 def save_info(
-    info: Union[BaseInfo, Sequence[BaseInfo]],
+    bundle: Bundle | Sequence[Bundle],
     path: str | Path,
 ) -> None:
-    """Save one or more Info objects to a .dat file.
+    """将一个或多个 bundle 的元数据保存到 .dat 文件。
 
     Args:
-        info: Single or sequence of Info objects (RawDataInfo, ResultsDataInfo).
-        path: Destination path (should end in .dat).
+        bundle: 单个或多个数据包
+        path: 输出路径
     """
     path = Path(path)
-    info_list = _to_list(info)
+    bundle_list = _to_list(bundle)
 
-    # Convert to dicts
-    data_to_save = [i.to_dict() for i in info_list]
+    data_to_save = []
+    for item in bundle_list:
+        payload = item.meta.to_dict()
+        payload.update(_bundle_to_attrs(item))
+        data_to_save.append(payload)
 
-    # If only one, save as dict, otherwise as list of dicts
     output = data_to_save[0] if len(data_to_save) == 1 else data_to_save
 
     with open(path, "w", encoding="utf-8") as f:
@@ -87,98 +156,100 @@ def save_info(
 
 
 def save_data(
-    data: Union[BaseData, Sequence[BaseData]],
+    bundle: Bundle | Sequence[Bundle],
     path: str | Path,
     fmt: Optional[str] = None,
     **kwargs: Any,
 ) -> None:
-    """Save one or more Data objects to .nc or .csv.
+    """保存一个或多个 bundle 的数据部分。
 
     Args:
-        data: Single or sequence of Data objects (RawData, ResultsData).
-        path: Destination path.
-        fmt: Optional format override ('nc', 'csv').
-        **kwargs: Additional arguments for xarray.to_netcdf or pandas.to_csv.
+        bundle: 单个或多个数据包
+        path: 输出路径
+        fmt: 输出格式覆盖，如 ``nc`` 或 ``csv``
+        **kwargs: 传递给底层写出函数的参数
     """
     path = Path(path)
     ext = fmt.lower() if fmt else path.suffix.lower().lstrip(".")
-    data_list = _to_list(data)
-    datasets = [d.data for d in data_list]
+    bundle_list = _to_list(bundle)
+    datasets = [item.data for item in bundle_list]
 
     if ext in {"nc", "netcdf"}:
         kwargs.setdefault("engine", "h5netcdf")
-        sanitized_datasets = [_sanitize_dataset(ds) for ds in datasets]
+        sanitized_datasets = [_sanitize_data(ds) for ds in datasets]
         if len(sanitized_datasets) == 1:
             sanitized_datasets[0].to_netcdf(path, **kwargs)
         else:
-            # Merge datasets if possible
-            combined = xr.merge(sanitized_datasets)
+            if any(isinstance(ds, xr.DataTree) for ds in sanitized_datasets):
+                raise ValueError("暂不支持将多个 DataTree 写入同一个 NetCDF 文件。")
+            # 多个 Dataset 可合并为一个 NetCDF。
+            dataset_list = [cast(xr.Dataset, ds) for ds in sanitized_datasets]
+            combined = xr.merge(dataset_list)
             combined.to_netcdf(path, **kwargs)
 
     elif ext == "csv":
         dfs = []
         for ds in datasets:
-            df = ds.to_dataframe()
-            # Reset index if it's a standard record/row dimension
-            if "record" in df.index.names or "row" in df.index.names:
-                df = df.reset_index(drop=True)
-            dfs.append(df)
+            dfs.extend(_data_to_dataframes(ds))
 
         final_df = dfs[0] if len(dfs) == 1 else pd.concat(dfs, ignore_index=True)
 
         final_df.to_csv(path, index=False, **kwargs)
     else:
-        raise ValueError(f"Unsupported format: {ext}. Use 'nc' or 'csv'.")
+        raise ValueError(f"不支持的格式: {ext}。请使用 'nc' 或 'csv'。")
 
 
 def save_combined(
-    data: Union[BaseData, Sequence[BaseData]],
-    info: Union[BaseInfo, Sequence[BaseInfo]],
+    bundle: Bundle | Sequence[Bundle],
     path: str | Path,
     **kwargs: Any,
 ) -> None:
-    """Save combined data and info to a .nc file.
+    """将数据和元数据保存到同一个 NetCDF 文件。
 
     Args:
-        data: Single or sequence of Data objects (RawData, ResultsData).
-        info: Single or sequence of Info objects (RawDataInfo, ResultsDataInfo).
-        path: Destination path.
-        **kwargs: Additional arguments for xarray.to_netcdf.
+        bundle: 单个或多个数据包
+        path: 输出路径
+        **kwargs: 传递给 xarray.to_netcdf 的参数
     """
     path = Path(path)
-    data_list = _to_list(data)
-    info_list = _to_list(info)
-
-    if len(data_list) != len(info_list) and len(info_list) != 1:
-        raise ValueError("Number of data objects and info objects must match, or provide a single info object.")
+    bundle_list = _to_list(bundle)
 
     combined_datasets = []
-    for i, d in enumerate(data_list):
-        ds = d.data.copy()
-        # Use the corresponding info or the only info provided
-        current_info = info_list[i] if i < len(info_list) else info_list[0]
-        # Update attributes with metadata, filtering out None values and converting complex types to JSON strings
-        info_dict = {}
-        for k, v in current_info.to_dict().items():
-            if v is None:
-                continue
-            if isinstance(v, (str, int, float, bool)) or (isinstance(v, (list, tuple)) and all(isinstance(x, (str, int, float, bool)) for x in v)):
-                info_dict[k] = v
-            else:
-                # Convert dicts and nested structures to JSON strings
-                info_dict[k] = json.dumps(v, ensure_ascii=False, cls=MetadataEncoder)
-        ds.attrs.update(info_dict)
-        combined_datasets.append(_sanitize_dataset(ds))
+    for item in bundle_list:
+        attrs = _metadata_to_attrs(item.meta)
+        attrs.update(_bundle_to_attrs(item))
+        combined_datasets.append(_sanitize_data(_with_attrs(item.data, attrs)))
 
     kwargs.setdefault("engine", "h5netcdf")
     if len(combined_datasets) == 1:
         combined_datasets[0].to_netcdf(path, **kwargs)
     else:
-        combined = xr.merge(combined_datasets)
+        if any(isinstance(ds, xr.DataTree) for ds in combined_datasets):
+            raise ValueError("暂不支持将多个 DataTree 写入同一个 NetCDF 文件。")
+        dataset_list = [cast(xr.Dataset, ds) for ds in combined_datasets]
+        combined = xr.merge(dataset_list)
         combined.to_netcdf(path, **kwargs)
 
 
+def save_bundle(
+    bundle: Bundle,
+    path: str | Path,
+    fmt: Optional[str] = None,
+    **kwargs: Any,
+) -> None:
+    """按输出扩展名保存 DataBundle 或 AnalysisBundle。"""
+    path = Path(path)
+    ext = fmt.lower() if fmt else path.suffix.lower().lstrip(".")
+    if ext in {"nc", "netcdf"}:
+        save_combined(bundle, path, **kwargs)
+    elif ext in {"dat", "json"}:
+        save_info(bundle, path)
+    else:
+        save_data(bundle, path, fmt=fmt, **kwargs)
+
+
 __all__ = [
+    "save_bundle",
     "save_combined",
     "save_data",
     "save_info",

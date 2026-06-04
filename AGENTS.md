@@ -1,91 +1,43 @@
 # AGENTS.md
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+本文件记录 echemistpy-cli 的协作和代码修改规则。优先遵守用户当前请求；若请求与本文件冲突，以当前请求为准。
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+## 1. 代码边界
 
-## 1. Think Before Coding
+- `data` 只放数据模型、schema、标准化、存储和通用数据工具。
+- `io` 只负责 reader/writer 门面、加载入口、格式识别和插件注册；具体写出细节委托给 `data.storage`。
+- `analysis` 只消费 `DataBundle`，返回 `AnalysisBundle`；分析模块不直接读取文件，也不承担绘图入口。
+- `cli` 是薄壳，只做参数解析、调用 public API 和输出用户可读结果。
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+## 2. 数据接口
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+- 统一使用 `Metadata`、`DataBundle`、`AnalysisBundle`。
+- 不恢复 `RawData`、`RawDataInfo`、`ResultsData` 等旧接口，也不写兼容层。
+- echem 是主要开发主线；XAS、TXM、XRD 可作为可选能力逐步补齐，但不能破坏 echem 测试。
 
-## 2. Simplicity First
+## 3. 依赖规则
 
-**Minimum code that solves the problem. Nothing speculative.**
+- 核心代码不使用 `traitlets`。
+- 默认依赖只保留数据层、CLI 和通用科学计算运行依赖。
+- echem、XAS、TXM、XRD 的 reader 或分析专属依赖放入对应 extras；默认依赖中已有的包不要在 extras 中重复声明。
+- 开发工具放入 `dev` 或 `test` extras，不放入默认依赖。
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+## 4. 语言规则
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+- 新增或修改的注释、docstring、CLI help、错误信息和 logging 文本使用中文。
+- 保留代码标识符、标准列名、文件格式名和第三方库名称的英文原文。
+- 日志使用结构化参数写法，例如 `logger.warning("读取 %s 失败: %s", path, exc)`。
 
-## 3. Surgical Changes
+## 5. 修改方式
 
-**Touch only what you must. Clean up only your own mess.**
+- 改动应直接服务当前任务，避免顺手重构无关模块。
+- 优先沿用现有模块结构和命名规则。
+- 删除依赖或旧接口时，同步更新文档、pyproject 和测试。
+- 不回滚用户已有改动；遇到无关脏文件时保持原样。
 
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
+## 6. 验证
 
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
-## 5. Commit Hygiene
-
-**Commit messages must be structured, specific, and reviewable.**
-
-When creating commits:
-- Use a standard subject line format: `type(scope): short summary`
-- Prefer conventional types such as `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
-- Write the subject line in Chinese
-- Keep the first line focused on the main change, not a vague summary like "update files"
-- Add multiple `-m` flags to describe each distinct change you made
-- Each extra `-m` message should describe one concrete item in Chinese, preferably starting with `- `
-
-Example:
-```bash
-git commit \
-  -m "fix(io): 规范化 xas 加载器元数据" \
-  -m "- 移除 CLAESS 读取器中错误的能量单位回退逻辑" \
-  -m "- 补充缺失元数据字段的回归测试" \
-  -m "- 更新文档示例以匹配新的加载结果"
-```
-
-The test:
-- A reviewer should understand what changed from the commit message alone
-- Distinct changes in one commit should be visible as distinct `-m` entries
-- The subject line and each extra `-m` entry should be written in Chinese
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+- echem 相关改动至少运行项目测试或与改动范围匹配的子集。
+- 收尾前优先运行 `uv run ruff check` 检查代码格式和 lint 问题，运行 `uv run ty check` 检查类型问题；若只能运行子集或检查失败，需要说明范围和剩余问题。
+- 依赖或 public API 改动后，扫描残留导入和旧接口名称。
+- 如果完整 lint 因历史债务失败，应明确说明剩余失败位置，不把它混入当前改动。

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ruff: noqa: N806, N815, PLR0912, PLR0914, PLR0915, PLR6301, RUF046
-"""CCS binary reader for LANHE/LAND battery test files."""
+"""蓝和/LAND 电池测试 CCS 二进制文件读取器。"""
 
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ from typing import Any, ClassVar
 import pandas as pd
 import xarray as xr
 
-from echemistpy.data.models import RawData, RawDataInfo
+from echemistpy.data.models import DataBundle, Metadata
 from echemistpy.data.utils import sanitize_variable_names
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
@@ -36,7 +35,7 @@ UNIX_MS_MAX = 4_102_444_800_000
 
 
 class LanheCCSReader(BaseReader):
-    """Reader for LANHE/LAND ``.ccs`` binary files."""
+    """蓝和/LAND ``.ccs`` 二进制文件读取器。"""
 
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "lanhe"
@@ -89,24 +88,24 @@ class LanheCCSReader(BaseReader):
     ]
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
-        """Initialize the LANHE CCS reader."""
+        """初始化蓝和 CCS reader。"""
         if "technique" not in kwargs:
             kwargs["technique"] = ["echem", "gcd"]
         super().__init__(filepath, **kwargs)
 
-    def _load_single_file(self, path: Path, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
-        """Load one LANHE/LAND ``.ccs`` file."""
+    def _load_single_file(self, path: Path, **_kwargs: Any) -> DataBundle:
+        """加载单个蓝和/LAND ``.ccs`` 文件。"""
         result = CCSParser(path).parse()
         if result.records.empty:
-            raise ValueError(f"No measurement records found in CCS file: {path}")
+            raise ValueError(f"CCS 文件中未找到测量记录: {path}")
 
         mass_override_g = self._parse_mass_g(self.active_material_mass)
         ds = self._create_dataset(result, mass_override_g)
-        raw_info = self._create_info(path, result, mass_override_g)
-        return RawData(data=ds), raw_info
+        metadata = self._create_bundle_metadata(path, result, mass_override_g)
+        return DataBundle(data=ds, meta=metadata, provenance={"source_path": str(path), "reader": self.__class__.__name__})
 
     def _create_dataset(self, result: CCSParseResult, mass_override_g: float | None = None) -> xr.Dataset:
-        """Convert parsed CCS records to an xarray Dataset."""
+        """将解析后的 CCS 记录转换为 xarray Dataset。"""
         records = result.records.copy()
         if mass_override_g is not None and mass_override_g > 0:
             records["SpeCap/mAh/g"] = records["Capacity/uAh"].astype(float).map(lambda value: value / (mass_override_g * 1000.0))
@@ -123,7 +122,7 @@ class LanheCCSReader(BaseReader):
         ds = xr.Dataset({str(column): (("record",), records[column].to_numpy()) for column in records.columns})
         ds = sanitize_variable_names(ds)
         if not isinstance(ds, xr.Dataset):
-            raise TypeError("Expected sanitized LANHE CCS data to remain an xarray.Dataset.")
+            raise TypeError("清理后的蓝和 CCS 数据必须保持为 xarray.Dataset。")
 
         if systime_values is not None:
             ds = self._assign_systime_coord(ds, systime_values)
@@ -140,26 +139,26 @@ class LanheCCSReader(BaseReader):
 
     @classmethod
     def _ordered_records(cls, records: pd.DataFrame) -> pd.DataFrame:
-        """Keep CCS Dataset variables aligned with LANHE XLSX reader output."""
+        """让 CCS Dataset 变量顺序与蓝和 XLSX reader 输出保持一致。"""
         ordered = [column for column in cls.PREFERRED_RECORD_COLUMNS if column in records]
         ordered.extend(column for column in records.columns if column not in ordered)
         return records[ordered]
 
     @staticmethod
     def _assign_systime_coord(ds: xr.Dataset, values: pd.Series) -> xr.Dataset:
-        """Assign absolute system time as a coordinate."""
+        """将绝对系统时间设置为坐标。"""
         try:
             systimes = pd.to_datetime(values.to_numpy())
         except (TypeError, ValueError) as exc:
-            logger.warning("Failed to parse LANHE CCS SysTime column: %s", exc)
+            logger.warning("解析蓝和 CCS SysTime 列失败: %s", exc)
             return ds
 
         ds = ds.assign_coords(systime=(("record",), systimes))
         ds.systime.attrs.update({"long_name": "System Time"})
         return ds
 
-    def _create_info(self, path: Path, result: CCSParseResult, mass_override_g: float | None = None) -> RawDataInfo:
-        """Create RawDataInfo for parsed CCS data."""
+    def _create_bundle_metadata(self, path: Path, result: CCSParseResult, mass_override_g: float | None = None) -> Metadata:
+        """为解析后的 CCS 数据创建 Metadata。"""
         parsed_metadata = result.metadata
         metadata = parsed_metadata.to_json_dict()
         metadata["file_path"] = str(path)
@@ -177,7 +176,7 @@ class LanheCCSReader(BaseReader):
 
         start_time = self.start_time or metadata.get("header_start_time") or metadata.get("log_start_time")
 
-        return RawDataInfo(
+        return Metadata(
             sample_name=self.sample_name or parsed_metadata.test_name or path.stem,
             start_time=start_time,
             operator=self.operator,
@@ -185,12 +184,12 @@ class LanheCCSReader(BaseReader):
             instrument=self.instrument,
             active_material_mass=active_material_mass,
             wave_number=self.wave_number,
-            others=metadata,
+            raw_metadata=metadata,
         )
 
     @staticmethod
     def _frame_to_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
-        """Return DataFrame rows as plain Python dictionaries."""
+        """将 DataFrame 行转换为普通 Python 字典。"""
         rows: list[dict[str, Any]] = []
         for record in frame.to_dict(orient="records"):
             rows.append({key: LanheCCSReader._plain_value(value) for key, value in record.items()})
@@ -198,7 +197,7 @@ class LanheCCSReader(BaseReader):
 
     @staticmethod
     def _plain_value(value: Any) -> Any:
-        """Convert pandas/numpy scalar values to metadata-safe Python values."""
+        """将 pandas/numpy 标量转换为可安全保存到元数据的 Python 值。"""
         if pd.isna(value):
             return None
         if hasattr(value, "item"):
@@ -207,7 +206,7 @@ class LanheCCSReader(BaseReader):
 
     @classmethod
     def _parse_mass_g(cls, mass_input: Any) -> float | None:
-        """Parse active material mass into grams."""
+        """将活性物质质量解析为克。"""
         if not mass_input:
             return None
         match = cls.MASS_REGEX.search(str(mass_input))
@@ -226,7 +225,7 @@ class LanheCCSReader(BaseReader):
 
     @staticmethod
     def _format_mass_text(mass_g: float | None) -> str | None:
-        """Format active material mass in the same unit used by LANHE exports."""
+        """按蓝和导出习惯格式化活性物质质量。"""
         if mass_g is None:
             return None
         return f"{mass_g * 1000:g} mg"
@@ -234,7 +233,7 @@ class LanheCCSReader(BaseReader):
 
 @dataclass(frozen=True)
 class ModeInfo:
-    """Known export naming for a CCS page state."""
+    """CCS 页面状态对应的导出命名。"""
 
     name: str
     mark1: str
@@ -251,7 +250,7 @@ MODE_BY_CODE: dict[int, ModeInfo] = {
 
 @dataclass(frozen=True)
 class ControlStep:
-    """Decoded control-page metadata for a measurement step."""
+    """单个测量步骤的控制页解码元数据。"""
 
     mode: ModeInfo
     cycle: int
@@ -262,7 +261,7 @@ class ControlStep:
 
 @dataclass
 class CCSMetadata:
-    """Header and parse metadata for a CCS file."""
+    """CCS 文件头和解析元数据。"""
 
     source_path: str
     file_name: str
@@ -284,7 +283,7 @@ class CCSMetadata:
 
     @property
     def active_material_text(self) -> str:
-        """Return an official-export-like active material description."""
+        """返回接近官方导出的活性物质描述。"""
         parts: list[str] = []
         if self.nominal_specific_capacity_mAh_g is not None:
             parts.append(f"Nominal specific capacity: {self.nominal_specific_capacity_mAh_g:g} mAh/g")
@@ -293,7 +292,7 @@ class CCSMetadata:
         return " ".join(parts)
 
     def to_json_dict(self) -> dict[str, Any]:
-        """Return a JSON-serializable metadata dictionary."""
+        """返回可 JSON 序列化的元数据字典。"""
         data = asdict(self)
         for key in ("header_start_time", "log_start_time", "finish_time"):
             value = data[key]
@@ -303,7 +302,7 @@ class CCSMetadata:
 
 @dataclass
 class CCSParseResult:
-    """Parsed CCS data and export-style tables."""
+    """解析后的 CCS 数据和导出风格表格。"""
 
     metadata: CCSMetadata
     records: pd.DataFrame
@@ -313,13 +312,13 @@ class CCSParseResult:
 
 
 class CCSParser:
-    """Parser for LANHE/LAND CCS files."""
+    """蓝和/LAND CCS 文件解析器。"""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
     def parse(self) -> CCSParseResult:
-        """Parse the CCS file into records, summaries, and metadata."""
+        """将 CCS 文件解析为记录、汇总表和元数据。"""
         data = self.path.read_bytes()
         data_start = self._detect_data_start(data)
         page_count = (len(data) - data_start) // PAGE_SIZE
@@ -329,13 +328,13 @@ class CCSParser:
         if log_start_ms is None:
             log_start_ms = header_start_ms
         if log_start_ms is None:
-            raise ValueError(f"Could not find a valid log start timestamp in {self.path}")
+            raise ValueError(f"未在 {self.path} 中找到有效日志起始时间戳。")
 
         metadata = self._parse_metadata(data, data_start, page_count, header_start_ms, log_start_ms)
         control_steps = self._parse_control_steps(data, log_start_ms)
         records = self._parse_records(data, data_start, log_start_ms, control_steps)
         if records.empty:
-            raise ValueError(f"No measurement records found in {self.path}")
+            raise ValueError(f"未在 {self.path} 中找到测量记录。")
 
         finish_ms = log_start_ms + int(records["TestTime_ms"].iloc[-1])
         metadata.finish_time = _datetime_from_unix_ms(finish_ms)
@@ -346,7 +345,7 @@ class CCSParser:
         return CCSParseResult(metadata=metadata, records=records, steps=steps, cycles=cycles, logs=logs)
 
     def _detect_data_start(self, data: bytes) -> int:
-        """Find the page-aligned measurement suffix."""
+        """查找按页对齐的测量数据后缀。"""
         page_count = len(data) // PAGE_SIZE
         suffix_valid = [False] * (page_count + 1)
         suffix_data_pages = [0] * (page_count + 1)
@@ -383,7 +382,7 @@ class CCSParser:
                 best = candidate
 
         if best is None:
-            raise ValueError(f"Could not detect CCS data pages in {self.path}")
+            raise ValueError(f"无法在 {self.path} 中识别 CCS 数据页。")
         return best[1]
 
     def _parse_metadata(
@@ -428,7 +427,7 @@ class CCSParser:
         )
 
     def _parse_control_steps(self, data: bytes, log_start_ms: int) -> dict[int, ControlStep]:
-        """Map data-page state words to their decoded control-page metadata."""
+        """将数据页状态字映射到解码后的控制页元数据。"""
         raw_steps: list[tuple[int, ModeInfo, int, int, int, int | None]] = []
         for offset in range(0, len(data) - PAGE_HEADER_SIZE, PAGE_SIZE):
             header = _page_header(data, offset)
@@ -715,7 +714,7 @@ class CCSParser:
             rows.append(
                 {
                     "Cycle": int(first["Cycle"]),
-                    "Step": int(step),
+                    "Step": int(str(step)),
                     "WorkMode": mode,
                     "StepDuration": str(last["StepDuration"]),
                     "StepInProcess": str(first["StepInProcess"]),
@@ -770,7 +769,7 @@ class CCSParser:
 
             rows.append(
                 {
-                    "Cycle": int(cycle),
+                    "Cycle": int(str(cycle)),
                     "CapC/uAh": _f32(cap_c),
                     "CapD/uAh": _f32(cap_d),
                     "SpeCapC/mAh/g": _f32(spe_cap_c),
@@ -841,7 +840,7 @@ class CCSParser:
 
 
 def format_duration_ms(milliseconds: int | float) -> str:
-    """Format milliseconds as the vendor export duration string."""
+    """将毫秒格式化为厂商导出的时长字符串。"""
     total_ms = int(round(float(milliseconds)))
     days, remainder = divmod(total_ms, 86_400_000)
     hours, remainder = divmod(remainder, 3_600_000)

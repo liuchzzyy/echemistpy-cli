@@ -26,4 +26,6 @@ def test_reader_selection_uses_declared_instruments() -> None:
     manager = get_plugin_manager()
 
     assert manager.get_loader(".mpr", instrument="mpr") is None
-    assert manager.get_loader(".mpr", instrument="biologic").__name__ == "BiologicMprReader"
+    reader = manager.get_loader(".mpr", instrument="biologic")
+    assert reader is not None
+    assert reader.__name__ == "BiologicMprReader"

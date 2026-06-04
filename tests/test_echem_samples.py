@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -35,11 +36,11 @@ BIOLOGIC_FILES = {
 
 @pytest.mark.parametrize("path", [LANHE_CCS, LANHE_XLSX])
 def test_lanhe_samples_load_to_echem_schema(path: Path) -> None:
-    raw_data, raw_info = load(path, instrument="lanhe")
-    dataset = raw_data.data
+    bundle = load(path, instrument="lanhe")
+    dataset = bundle.data
 
-    assert raw_info.instrument == "lanhe"
-    assert raw_info.technique == ["echem", "gcd"]
+    assert bundle.meta.instrument == "lanhe"
+    assert bundle.meta.technique == ["echem", "gcd"]
     assert dataset.sizes["record"] == 85756
     assert {
         "cycle_number",
@@ -61,22 +62,22 @@ def test_lanhe_samples_load_to_echem_schema(path: Path) -> None:
 
 
 @pytest.mark.parametrize(("path", "expected"), BIOLOGIC_FILES.items())
-def test_biologic_mpr_samples_load_to_echem_schema(path: Path, expected: dict[str, object]) -> None:
-    raw_data, raw_info = load(path, instrument="biologic")
-    dataset = raw_data.data
+def test_biologic_mpr_samples_load_to_echem_schema(path: Path, expected: dict[str, Any]) -> None:
+    bundle = load(path, instrument="biologic")
+    dataset = bundle.data
 
-    assert raw_info.instrument == "biologic"
-    assert set(raw_info.technique) == expected["technique"]
+    assert bundle.meta.instrument == "biologic"
+    assert set(bundle.meta.technique) == expected["technique"]
     assert dataset.sizes["record"] == expected["rows"]
     assert expected["variables"].issubset(dataset.data_vars)
     assert {"record", "time_s", "systime"}.issubset(dataset.coords)
     assert np.issubdtype(dataset["time_s"].dtype, np.number)
-    assert all("/" not in name and "|" not in name and "µ" not in name for name in dataset.data_vars)
+    assert all("/" not in str(name) and "|" not in str(name) and "µ" not in str(name) for name in dataset.data_vars)
 
 
 def test_biologic_directory_loads_mpr_files() -> None:
-    raw_data, raw_info = load(SAMPLES / "Biologic", instrument="biologic")
+    bundle = load(SAMPLES / "Biologic", instrument="biologic")
 
-    assert raw_data.is_tree
-    assert raw_info.instrument == "biologic"
-    assert raw_info.others["n_files"] == 4
+    assert bundle.is_tree
+    assert bundle.meta.instrument == "biologic"
+    assert bundle.meta.raw_metadata["n_files"] == 4

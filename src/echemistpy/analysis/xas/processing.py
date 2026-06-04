@@ -1,12 +1,13 @@
-"""XAS Preprocessing Module.
+"""XAS 预处理模块。
 
 Handles data cleaning, calibration, and alignment.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import xarray as xr
@@ -15,18 +16,24 @@ from scipy.signal import medfilt, savgol_filter
 
 from echemistpy.analysis.xas.elements import ELEMENT_DB
 
-try:
-    from larch import Group  # type: ignore
-    from larch.xafs import find_e0, fluo_corr  # type: ignore
-    from larch.xray import xray_edge  # type: ignore
+Group: Any
+find_e0: Any
+fluo_corr: Any
+xray_edge: Any
 
-    HAS_LARCH = True
-except ImportError:
-    HAS_LARCH = False
-    Group = None
-    find_e0 = None
-    fluo_corr = None
-    xray_edge = None
+
+def _load_larch_symbols() -> tuple[bool, Any, Any, Any, Any]:
+    """加载可选的 larch 符号。"""
+    try:
+        larch_module = importlib.import_module("larch")
+        xafs_module = importlib.import_module("larch.xafs")
+        xray_module = importlib.import_module("larch.xray")
+    except ImportError:
+        return False, None, None, None, None
+    return True, larch_module.Group, xafs_module.find_e0, xafs_module.fluo_corr, xray_module.xray_edge
+
+
+HAS_LARCH, Group, find_e0, fluo_corr, xray_edge = _load_larch_symbols()
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +73,7 @@ def calibrate_energy(ds: xr.Dataset, element: str, edge: str = "K", reference_e0
         theo_lookup = reference_e0
     else:
         # Fallback to Larch lookup
-        ref_data = xray_edge(element, edge)  # type: ignore
+        ref_data = xray_edge(element, edge)
         if isinstance(ref_data, tuple):
             theo_lookup = ref_data[0]
         else:
@@ -81,7 +88,7 @@ def calibrate_energy(ds: xr.Dataset, element: str, edge: str = "K", reference_e0
     target_e0 = center_e0
 
     delta_e = target_e0 - measured_e0
-    logger.info(f"Calibration: Measured E0={measured_e0:.2f}, Ref E0={target_e0:.2f}, Delta={delta_e:.2f}")
+    logger.info("能量校准: 实测 E0=%.2f, 参考 E0=%.2f, 偏移=%.2f", measured_e0, target_e0, delta_e)
     return float(delta_e)
 
 
@@ -109,7 +116,7 @@ def find_e0_by_derivative(
     mask = (energy >= theoretical_e0 - search_range) & (energy <= theoretical_e0 + search_range)
 
     if not np.any(mask):
-        logger.warning("No data points in E0 search range %s +/- %s. Using global maximum derivative.", theoretical_e0, search_range)
+        logger.warning("E0 搜索范围 %s +/- %s 内没有数据点，改用全局最大导数。", theoretical_e0, search_range)
         idx = np.argmax(dmu)
     else:
         # Find max derivative in the window
@@ -259,7 +266,7 @@ def deglitch(ds: xr.Dataset, window: int = 3, threshold: float = 3.0) -> xr.Data
         cleaned_mu[i] = y_clean
 
         if np.sum(mask) > 0:
-            logger.debug(f"Deglitched {np.sum(mask)} points in record {i}")
+            logger.debug("已在记录 %s 中去除 %s 个毛刺点。", i, np.sum(mask))
 
     if not is_2d:
         cleaned_mu = cleaned_mu[0]
@@ -331,14 +338,13 @@ def correct_fluorescence(
     corrected_mu = np.zeros_like(mu)
 
     for i in range(mu.shape[0]):
-        group = Group(energy=energy, mu=mu[i])  # type: ignore
-        # fluo_corr(group, formula, edge, ang_in, ang_out)
-        fluo_corr(group, formula=formula, edge=edge, anginp=angle_in, angout=angle_out)  # type: ignore
+        group = Group(energy=energy, mu=mu[i])
+        fluo_corr(group, formula=formula, edge=edge, anginp=angle_in, angout=angle_out)
 
         if hasattr(group, "mu_corr"):
             corrected_mu[i] = group.mu_corr
         else:
-            logger.warning("Fluorescence correction failed for record %s, using original.", i)
+            logger.warning("记录 %s 的荧光校正失败，保留原始数据。", i)
             corrected_mu[i] = mu[i]
 
     if not is_2d:
@@ -390,9 +396,9 @@ def check_consistency(ds: xr.Dataset, correlation_threshold: float = 0.95, energ
         if corr >= correlation_threshold:
             valid_indices.append(i)
         else:
-            logger.warning(f"Record {i} rejected: Correlation {corr:.4f} < {correlation_threshold}")
+            logger.warning("记录 %s 被剔除: 相关系数 %.4f < %s。", i, corr, correlation_threshold)
 
-    logger.info(f"Consistency Check: {len(valid_indices)}/{n_records} passed.")
+    logger.info("一致性检查: %s/%s 条记录通过。", len(valid_indices), n_records)
     return valid_indices
 
 

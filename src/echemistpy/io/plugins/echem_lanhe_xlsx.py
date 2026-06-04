@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""XLSX Data Reader for LANHE battery test files with metadata extraction using traitlets."""
+"""蓝和电池测试 XLSX 文件读取器。"""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ import openpyxl.worksheet.worksheet
 import pandas as pd
 import xarray as xr
 
-from echemistpy.data.models import RawData, RawDataInfo
-from echemistpy.data.utils import merge_infos, sanitize_variable_names
+from echemistpy.data.models import DataBundle, Metadata
+from echemistpy.data.utils import sanitize_variable_names
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
 
@@ -24,13 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 class LanheXLSXReader(BaseReader):
-    """Reader for LANHE exported XLSX files.
+    """蓝和导出 XLSX 文件读取器。
 
-    This reader handles the specific structure of LANHE battery test exports,
-    including metadata from multiple sheets and time-series data from the main data sheet.
+    读取蓝和电池测试导出的多 sheet 元数据和主数据表中的时间序列。
     """
 
-    # --- Constants for better maintainability ---
+    # --- 解析常量 ---
     MEASUREMENT_COLUMNS: ClassVar[list[str]] = [
         "Record",
         "Cycle",
@@ -121,66 +120,66 @@ class LanheXLSXReader(BaseReader):
     )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
-        """Initialize the LANHE reader.
+        """初始化蓝和 XLSX reader。
 
         Args:
-            filepath: Path to XLSX file or directory
-            **kwargs: Additional metadata overrides
+            filepath: XLSX 文件或目录路径
+            **kwargs: 额外元数据覆盖项
         """
-        # Set default technique
+        # 设置默认技术类型。
         if "technique" not in kwargs:
             kwargs["technique"] = ["echem"]
         super().__init__(filepath, **kwargs)
 
-    def _load_single_file(self, path: Path, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
-        """Internal method to load and process a single LANHE XLSX file.
+    def _load_single_file(self, path: Path, **_kwargs: Any) -> DataBundle:
+        """加载并处理单个蓝和 XLSX 文件。
 
         Args:
-            path: Path to the XLSX file
-            **_kwargs: Additional arguments (unused, prefixed with _ to silence linter)
+            path: XLSX 文件路径
+            **_kwargs: 额外参数（未使用）
 
         Returns:
-            Tuple of (RawData, RawDataInfo)
+            DataBundle 数据包
         """
-        # 1. Extraction
+        # 1. 提取。
         metadata, data_dict = self._read_xlsx(path)
 
-        # 2. Cleaning & Standardization
+        # 2. 清理和标准化。
         cleaned_metadata = self._clean_metadata(metadata)
         mass = self.active_material_mass or cleaned_metadata.get("active_material_mass")
         cleaned_data = self._clean_data(data_dict, active_material_mass=mass)
 
-        # 3. Xarray Conversion
+        # 3. 转换为 xarray。
         ds = self._create_dataset(cleaned_data)
         ds = self._apply_time_coords(ds)
         ds = self._set_primary_index(ds)
 
-        # 4. Metadata Packaging
+        # 4. 打包元数据。
         cleaned_metadata["file_path"] = str(path)
         if mass:
             cleaned_metadata["active_material_mass"] = mass
-        raw_info = self._create_raw_info(cleaned_metadata, str(cleaned_metadata.get("test_name", path.stem)))
+        metadata = self._create_metadata(cleaned_metadata, str(cleaned_metadata.get("test_name", path.stem)))
 
-        return RawData(data=ds), raw_info
+        return DataBundle(data=ds, meta=metadata, provenance={"source_path": str(path), "reader": self.__class__.__name__})
 
     @staticmethod
     def _create_dataset(data: dict[str, Any]) -> xr.Dataset:
-        """Create an xarray Dataset from cleaned data dictionary.
+        """根据清理后的数据字典创建 xarray Dataset。
 
         Args:
-            data: Cleaned data dictionary
+            data: 清理后的数据字典
 
         Returns:
             xarray Dataset
         """
         data_vars = {LanheXLSXReader._dataset_column_name(k): (("record",), v) for k, v in data.items() if not k.startswith("_") and not LanheXLSXReader._all_missing(v)}
         if not data_vars:
-            raise ValueError("No LANHE measurement records found in XLSX export.")
+            raise ValueError("蓝和 XLSX 导出中未找到测量记录。")
 
         ds = xr.Dataset(data_vars)
         ds = sanitize_variable_names(ds)
         if not isinstance(ds, xr.Dataset):
-            raise TypeError("Expected sanitized LANHE data to remain an xarray.Dataset.")
+            raise TypeError("清理后的蓝和数据必须保持为 xarray.Dataset。")
 
         source_columns = data.get("_metadata", {}).get("columns", [])
         ds.attrs["source_columns"] = [str(c) for c in source_columns]
@@ -188,13 +187,13 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _apply_time_coords(ds: xr.Dataset) -> xr.Dataset:
-        """Convert SysTime to coordinates and calculate relative time.
+        """将 SysTime 转为坐标并计算相对时间。
 
         Args:
             ds: xarray Dataset
 
         Returns:
-            Modified xarray Dataset
+            修改后的 xarray Dataset
         """
         systime_key = "SysTime" if "SysTime" in ds else "SysTime".replace("/", "_")
 
@@ -214,50 +213,50 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _set_primary_index(ds: xr.Dataset) -> xr.Dataset:
-        """Set the primary index for the 'record' dimension.
+        """为 record 维度设置主索引。
 
         Args:
             ds: xarray Dataset
 
         Returns:
-            Modified xarray Dataset
+            修改后的 xarray Dataset
         """
         for index_col in LanheXLSXReader.INDEX_COLUMNS:
-            # Check both original and sanitized names
+            # 同时检查原始列名和清理后的列名。
             for col in [index_col, index_col.replace("/", "_")]:
                 if col in ds:
                     return ds.set_index(record=col)
         return ds
 
-    def _create_raw_info(
+    def _create_metadata(
         self,
         metadata: dict[str, Any],
         default_sample_name: str,
         technique_override: list[str] | None = None,
-    ) -> RawDataInfo:
-        """Create a RawDataInfo object from metadata.
+    ) -> Metadata:
+        """从清理后的元数据创建 Metadata。
 
         Args:
-            path: File path
-            metadata: Cleaned metadata dictionary
-            mass: Active material mass
+            metadata: 清理后的元数据字典
+            default_sample_name: 默认样本名
+            technique_override: 技术类型覆盖项
 
         Returns:
-            RawDataInfo object
+            Metadata 对象
         """
         mass = metadata.get("active_material_mass")
         start_time_val = self.start_time or metadata.get("start_time")
         if isinstance(start_time_val, datetime):
             start_time_val = start_time_val.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Default to GCD if it's echem
+        # 蓝和电池测试默认在 echem 基础上补充 GCD 技术类型。
         tech_list = list(self.technique)
         if tech_list == ["echem"]:
             tech_list.append("gcd")
 
         metadata_with_path = {**metadata}
 
-        return RawDataInfo(
+        return Metadata(
             sample_name=self.sample_name or default_sample_name,
             start_time=start_time_val,
             operator=self.operator or metadata.get("operator"),
@@ -265,67 +264,22 @@ class LanheXLSXReader(BaseReader):
             instrument=self.instrument,
             active_material_mass=mass,
             wave_number=self.wave_number,
-            others=metadata_with_path,
+            raw_metadata=metadata_with_path,
         )
-
-    def _load_directory(self, path: Path, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
-        """Load all LANHE XLSX files in a directory into a DataTree.
-
-        Args:
-            path: Path to the directory
-            **_kwargs: Additional arguments (unused, prefixed with _ to silence linter)
-
-        Returns:
-            Tuple of (RawData with DataTree, merged RawDataInfo)
-        """
-        xlsx_files = sorted(path.rglob("*.xlsx"))
-        if not xlsx_files:
-            raise FileNotFoundError(f"No .xlsx files found in {path}")
-
-        tree = xr.DataTree(name=path.name)
-        infos = []
-
-        for f in xlsx_files:
-            try:
-                raw_data, raw_info = self._load_single_file(f)
-                node_path = "/".join(f.relative_to(path).with_suffix("").parts)
-
-                tree[node_path] = raw_data.data
-                tree[node_path].attrs.update(raw_info.to_dict())
-                infos.append(raw_info)
-            except Exception as e:
-                logger.error("Failed to load %s: %s", f, e)
-
-        if not tree.children and not tree.has_data:
-            raise RuntimeError(f"Failed to load any valid .xlsx files from {path}")
-
-        merged_info = merge_infos(
-            infos,
-            path,
-            sample_name_override=self.sample_name,
-            operator_override=self.operator,
-            start_time_override=self.start_time,
-            active_material_mass_override=self.active_material_mass,
-            wave_number_override=self.wave_number,
-            technique=list(self.technique),
-            instrument=self.instrument,
-        )
-
-        return RawData(data=tree), merged_info
 
     def _read_xlsx(self, filepath: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Read metadata and data from LANHE .xlsx file using openpyxl.
+        """使用 openpyxl 读取蓝和 .xlsx 文件中的元数据和数据。
 
         Args:
-            filepath: Path to the XLSX file
+            filepath: XLSX 文件路径
 
         Returns:
-            Tuple of (metadata_dict, data_dict)
+            (元数据字典, 数据字典) 元组
         """
         metadata: dict[str, Any] = {}
         data_dict: dict[str, Any] = {}
 
-        # Use read_only for memory efficiency
+        # 使用 read_only 降低内存占用。
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
         try:
             metadata, data_dict = self._read_workbook(wb, filepath)
@@ -335,7 +289,7 @@ class LanheXLSXReader(BaseReader):
         return metadata, data_dict
 
     def _read_workbook(self, wb: openpyxl.Workbook, filepath: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Read LANHE workbook metadata sheets and channel data sheet."""
+        """读取蓝和 workbook 中的元数据 sheet 和通道数据 sheet。"""
         metadata: dict[str, Any] = {}
         self._read_test_info(wb, metadata)
         self._read_proc_info(wb, metadata)
@@ -343,7 +297,7 @@ class LanheXLSXReader(BaseReader):
 
         data_sheet_name = self._find_data_sheet(wb)
         if data_sheet_name is None:
-            logger.warning("No LANHE channel data sheet found in %s", filepath)
+            logger.warning("未在 %s 中找到蓝和通道数据表。", filepath)
             return metadata, {}
 
         data_dict = self._read_record_data_from_ws(wb[data_sheet_name], data_sheet_name)
@@ -357,14 +311,14 @@ class LanheXLSXReader(BaseReader):
         return metadata, data_dict
 
     def _read_record_data_from_ws(self, ws: openpyxl.worksheet.worksheet.Worksheet, sheet_name: str) -> dict[str, Any]:
-        """Extract record-level data from an open worksheet.
+        """从已打开的 worksheet 中提取记录级数据。
 
         Args:
-            ws: openpyxl Worksheet object
-            sheet_name: Name of the sheet
+            ws: openpyxl Worksheet 对象
+            sheet_name: sheet 名称
 
         Returns:
-            Dictionary with column data
+            包含列数据的字典
         """
         header_pairs: list[tuple[int, str]] | None = None
         cycle_header_pairs: list[tuple[int, str]] | None = None
@@ -401,7 +355,7 @@ class LanheXLSXReader(BaseReader):
         if not (header_pairs and rows):
             return {}
 
-        data = {header: [self._convert_cell_value(row[col_idx], header) if col_idx < len(row) else None for row in rows] for col_idx, header in header_pairs}
+        data: dict[str, Any] = {header: [self._convert_cell_value(row[col_idx], header) if col_idx < len(row) else None for row in rows] for col_idx, header in header_pairs}
         data["_metadata"] = {
             "sheet_name": sheet_name,
             "num_rows": len(rows),
@@ -412,11 +366,11 @@ class LanheXLSXReader(BaseReader):
         return data
 
     def _read_test_info(self, wb: openpyxl.Workbook, metadata: dict[str, Any]) -> None:
-        """Read 'Test information' sheet.
+        """读取 'Test information' sheet。
 
         Args:
-            wb: openpyxl Workbook object
-            metadata: Metadata dictionary to update
+            wb: openpyxl Workbook 对象
+            metadata: 待更新的元数据字典
         """
         if "Test information" not in wb.sheetnames:
             return
@@ -427,11 +381,11 @@ class LanheXLSXReader(BaseReader):
             metadata["Test_Information"] = {h: self._convert_cell_value(ws[2][i].value, h) for i, h in enumerate(headers) if i < len(ws[2])}
 
     def _read_proc_info(self, wb: openpyxl.Workbook, metadata: dict[str, Any]) -> None:
-        """Read 'Ch1_Proc' sheet and extract Work Mode table.
+        """读取 'Ch1_Proc' sheet 并提取 Work Mode 表。
 
         Args:
-            wb: openpyxl Workbook object
-            metadata: Metadata dictionary to update
+            wb: openpyxl Workbook 对象
+            metadata: 待更新的元数据字典
         """
         if "Ch1_Proc" not in wb.sheetnames:
             return
@@ -456,11 +410,11 @@ class LanheXLSXReader(BaseReader):
         metadata["Channel_Process_Info"] = proc_info
 
     def _read_log_info(self, wb: openpyxl.Workbook, metadata: dict[str, Any]) -> None:
-        """Read 'Log' sheet.
+        """读取 'Log' sheet。
 
         Args:
-            wb: openpyxl Workbook object
-            metadata: Metadata dictionary to update
+            wb: openpyxl Workbook 对象
+            metadata: 待更新的元数据字典
         """
         if "Log" not in wb.sheetnames:
             return
@@ -473,30 +427,30 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _find_data_sheet(wb: openpyxl.Workbook) -> str | None:
-        """Find the sheet containing 'DefaultGroup'.
+        """查找包含 'DefaultGroup' 的 sheet。
 
         Args:
-            wb: openpyxl Workbook object
+            wb: openpyxl Workbook 对象
 
         Returns:
-            Sheet name or None
+            sheet 名称或 None
         """
         excluded = {"Test information", "Ch1_Proc", "Log"}
         return next((name for name in wb.sheetnames if "DefaultGroup" in name), None) or next((name for name in wb.sheetnames if name not in excluded), None)
 
     @staticmethod
     def _is_empty_row(row: tuple[Any, ...]) -> bool:
-        """Return True when a worksheet row has no meaningful values."""
+        """判断 worksheet 行是否没有有效值。"""
         return not row or all(cell is None or not str(cell).strip() for cell in row)
 
     @staticmethod
     def _header_values(row: tuple[Any, ...]) -> list[str]:
-        """Extract non-empty string header values from a worksheet row."""
+        """从 worksheet 行中提取非空字符串表头。"""
         return [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
 
     @classmethod
     def _header_pairs(cls, row: tuple[Any, ...]) -> list[tuple[int, str]]:
-        """Return unique non-empty headers with their source column indices."""
+        """返回唯一非空表头及其来源列索引。"""
         seen: dict[str, int] = {}
         pairs: list[tuple[int, str]] = []
         for idx, cell in enumerate(row):
@@ -513,22 +467,22 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _is_measurement_header(headers: list[str]) -> bool:
-        """Detect the LANHE per-record measurement header."""
+        """识别蓝和逐记录测量表头。"""
         return len(headers) >= 3 and headers[:3] == ["Cycle", "Step", "Record"]
 
     @staticmethod
     def _is_cycle_summary_header(headers: list[str]) -> bool:
-        """Detect the cycle summary header at the top of the channel sheet."""
+        """识别通道 sheet 顶部的循环汇总表头。"""
         return "CapC/uAh" in headers and "CapD/uAh" in headers
 
     @staticmethod
     def _is_step_summary_header(headers: list[str]) -> bool:
-        """Detect a step summary header."""
+        """识别步骤汇总表头。"""
         return len(headers) >= 2 and headers[0] == "Step" and headers[1] == "WorkMode"
 
     @staticmethod
     def _is_measurement_row(row: tuple[Any, ...]) -> bool:
-        """LANHE record rows begin with numeric Cycle, Step, and Record values."""
+        """蓝和记录行以数值型 Cycle、Step 和 Record 开头。"""
         if len(row) < 3:
             return False
         try:
@@ -541,7 +495,7 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _is_cycle_summary_row(row: tuple[Any, ...]) -> bool:
-        """Cycle summary rows begin with a numeric cycle id."""
+        """循环汇总行以数值型循环编号开头。"""
         try:
             int(row[0])
             return True
@@ -550,7 +504,7 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _is_step_summary_row(row: tuple[Any, ...]) -> bool:
-        """Step summary rows begin with numeric Step and textual WorkMode."""
+        """步骤汇总行以数值型 Step 和文本型 WorkMode 开头。"""
         if len(row) < 2:
             return False
         try:
@@ -561,12 +515,12 @@ class LanheXLSXReader(BaseReader):
 
     @classmethod
     def _row_to_dict(cls, row: tuple[Any, ...], header_pairs: list[tuple[int, str]]) -> dict[str, Any]:
-        """Convert a worksheet row to a dictionary using source column indices."""
+        """按来源列索引将 worksheet 行转换为字典。"""
         return {header: cls._convert_cell_value(row[col_idx], header) if col_idx < len(row) else None for col_idx, header in header_pairs}
 
     @classmethod
     def _convert_cell_value(cls, value: Any, header: str | None = None) -> Any:
-        """Convert one Excel cell into a Python value using LANHE conventions."""
+        """按蓝和约定将单个 Excel 单元格转换为 Python 值。"""
         if value is None:
             return None
         if isinstance(value, str):
@@ -587,23 +541,23 @@ class LanheXLSXReader(BaseReader):
 
     @classmethod
     def _dataset_column_name(cls, column_name: str) -> str:
-        """Return the xarray variable name for an official LANHE column name."""
+        """返回官方蓝和列名对应的 xarray 变量名。"""
         return cls.DATA_COLUMN_RENAMES.get(column_name, column_name)
 
     @staticmethod
     def _all_missing(values: Any) -> bool:
-        """Return True when a column contains only missing values."""
+        """判断一列是否全部缺失。"""
         if not isinstance(values, list):
             return False
         return all(value is None for value in values)
 
     @staticmethod
     def _assign_systime_coord(ds: xr.Dataset, systime_key: str) -> xr.Dataset:
-        """Assign absolute system time as a coordinate and remove duplicate variable."""
+        """将绝对系统时间设置为坐标并删除重复变量。"""
         try:
             systimes = pd.to_datetime(ds[systime_key].values)
         except (TypeError, ValueError) as exc:
-            logger.warning("Failed to parse LANHE SysTime column: %s", exc)
+            logger.warning("解析蓝和 SysTime 列失败: %s", exc)
             return ds
 
         ds = ds.assign_coords(systime=(("record",), systimes))
@@ -613,11 +567,11 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _assign_time_coord_from_column(ds: xr.Dataset, time_key: str) -> xr.Dataset:
-        """Assign relative test time as the canonical time_s coordinate."""
+        """将相对测试时间设置为标准 time_s 坐标。"""
         try:
             time_values = pd.to_numeric(ds[time_key].values).astype(float)
         except (TypeError, ValueError) as exc:
-            logger.warning("Failed to parse LANHE %s column as seconds: %s", time_key, exc)
+            logger.warning("解析蓝和 %s 列为秒失败: %s", time_key, exc)
             return ds
 
         ds = ds.assign_coords(time_s=(("record",), time_values))
@@ -626,13 +580,13 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _convert_time(value: Any) -> Any:
-        """Convert Excel values or LANHE time strings to standard formats.
+        """将 Excel 值或蓝和时间字符串转换为标准格式。
 
         Args:
-            value: Value to convert
+            value: 待转换值
 
         Returns:
-            Converted value
+            转换后的值
         """
         if value is None or isinstance(value, (datetime, int, float)):
             return value
@@ -647,7 +601,7 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _convert_time_string(value: str) -> Any:
-        """Convert a LANHE time-like string to datetime, seconds, or original text."""
+        """将蓝和时间字符串转换为 datetime、秒数或原始文本。"""
         if ":" not in value:
             return value
         days_duration = LanheXLSXReader._parse_days_duration(value)
@@ -659,7 +613,7 @@ class LanheXLSXReader(BaseReader):
             parsed = LanheXLSXReader._parse_abs_time(parts[0], parts[1]) or LanheXLSXReader._parse_duration(parts[0], parts[1])
             return parsed if parsed is not None else value
 
-        # Simple date YYYY-MM-DD
+        # 简单日期格式 YYYY-MM-DD。
         if len(value) == 10 and value[4] in {"-", "/"}:
             try:
                 return datetime.strptime(value.replace("/", "-"), "%Y-%m-%d")
@@ -669,7 +623,7 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _parse_days_duration(value: str) -> float | None:
-        """Parse strings such as '0 days 06:43:26' into seconds."""
+        """将 '0 days 06:43:26' 这类字符串解析为秒数。"""
         match = re.match(r"^(\d+)\s+days?\s+(\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)$", value)
         if not match:
             return None
@@ -677,19 +631,19 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _parse_abs_time(date_part: str, time_part: str) -> datetime | None:
-        """Parse YYYY-MM-DD HH:MM:SS.mmm format.
+        """解析 YYYY-MM-DD HH:MM:SS.mmm 格式。
 
         Args:
-            date_part: Date part of the string
-            time_part: Time part of the string
+            date_part: 日期部分
+            time_part: 时间部分
 
         Returns:
-            datetime object or None
+            datetime 对象或 None
         """
         try:
-            # Normalize separator
+            # 统一日期分隔符。
             date_str = date_part.replace("/", "-")
-            # Handle milliseconds if present
+            # 处理可选毫秒。
             if "." in time_part:
                 return datetime.strptime(f"{date_str} {time_part}", "%Y-%m-%d %H:%M:%S.%f")
             return datetime.strptime(f"{date_str} {time_part}", "%Y-%m-%d %H:%M:%S")
@@ -698,14 +652,14 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _parse_duration(days_part: str, hms_part: str) -> float | None:
-        """Parse D HH:MM:SS.mmm format into total seconds.
+        """将 D HH:MM:SS.mmm 格式解析为总秒数。
 
         Args:
-            days_part: Days part of the string
-            hms_part: Hours:Minutes:Seconds part
+            days_part: 天数部分
+            hms_part: 时分秒部分
 
         Returns:
-            Total seconds or None
+            总秒数或 None
         """
         if days_part.isdigit():
             try:
@@ -717,13 +671,13 @@ class LanheXLSXReader(BaseReader):
         return None
 
     def _clean_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        """Clean and map metadata to standard fields.
+        """清理元数据并映射到标准字段。
 
         Args:
-            metadata: Raw metadata dictionary
+            metadata: 原始元数据字典
 
         Returns:
-            Cleaned metadata dictionary
+            清理后的元数据字典
         """
         cleaned: dict[str, Any] = {}
 
@@ -733,7 +687,7 @@ class LanheXLSXReader(BaseReader):
                 if actual_key:
                     cleaned[clean_key] = info[actual_key]
 
-            # Parse Active material mass and capacity
+            # 解析活性物质质量和标称比容量。
             if am := cleaned.get("active_material"):
                 am_str = str(am)
                 if "Active material:" in am_str:
@@ -750,19 +704,19 @@ class LanheXLSXReader(BaseReader):
         return {**metadata, **cleaned}
 
     def _clean_data(self, data: dict[str, Any], active_material_mass: Any = None) -> dict[str, Any]:
-        """Filter, order, and optionally calculate specific capacity.
+        """过滤、排序并按需计算比容量。
 
         Args:
-            data: Raw data dictionary
-            active_material_mass: Active material mass
+            data: 原始数据字典
+            active_material_mass: 活性物质质量
 
         Returns:
-            Cleaned data dictionary
+            清理后的数据字典
         """
-        # 1. Calculate Specific Capacity if mass is available
+        # 1. 若质量可用则计算比容量。
         spe_cap_cal = self._calculate_specific_capacity(data, active_material_mass)
 
-        # 2. Build ordered result dictionary while preserving extra official columns
+        # 2. 构建有序结果，同时保留额外官方列。
         cleaned_data = {}
         for col in self.MEASUREMENT_COLUMNS:
             if col == "SpeCap_cal/mAh/g":
@@ -784,14 +738,14 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _calculate_specific_capacity(data: dict[str, Any], mass_input: Any) -> list[float | None] | None:
-        """Calculate specific capacity (mAh/g) from capacity (uAh) and mass.
+        """根据容量（uAh）和质量计算比容量（mAh/g）。
 
         Args:
-            data: Data dictionary
-            mass_input: Mass value
+            data: 数据字典
+            mass_input: 质量值
 
         Returns:
-            List of specific capacity values or None
+            比容量值列表或 None
         """
         if not mass_input or "Capacity/uAh" not in data:
             return None
@@ -804,7 +758,7 @@ class LanheXLSXReader(BaseReader):
 
     @classmethod
     def _parse_mass_g(cls, mass_input: Any) -> float | None:
-        """Parse active material mass into grams."""
+        """将活性物质质量解析为克。"""
         match = cls.MASS_REGEX.search(str(mass_input))
         if not match:
             return None
@@ -821,7 +775,7 @@ class LanheXLSXReader(BaseReader):
 
     @staticmethod
     def _specific_capacity_from_capacity(capacity_uah: list[Any], mass_g: float) -> list[float | None]:
-        """Calculate specific capacity from capacity in uAh and mass in grams."""
+        """根据 uAh 容量和克为单位的质量计算比容量。"""
         result: list[float | None] = []
         for capacity in capacity_uah:
             if capacity is None:

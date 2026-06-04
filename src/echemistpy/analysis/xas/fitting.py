@@ -1,4 +1,4 @@
-"""XAS Multivariate Analysis and Fitting Module.
+"""XAS 多变量分析和拟合模块。
 
 Handles PCA, NMF, and Linear Combination Fitting (LCF).
 """
@@ -11,9 +11,16 @@ from typing import Any, Optional
 import numpy as np
 import xarray as xr
 
-try:
-    from sklearn.decomposition import NMF, PCA  # type: ignore
+NMF: Any
+PCA: Any
+lmfit: Any
 
+try:
+    from sklearn.decomposition import NMF as _NMF
+    from sklearn.decomposition import PCA as _PCA
+
+    NMF = _NMF
+    PCA = _PCA
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -21,7 +28,7 @@ except ImportError:
     NMF = None
 
 try:
-    import lmfit  # type: ignore
+    import lmfit
 
     HAS_LMFIT = True
 except ImportError:
@@ -57,10 +64,10 @@ def perform_pca(ds: xr.Dataset, n_components: Optional[int] = None, standardize:
     # Handle NaNs: drop columns/rows or fill?
     # PCA cannot handle NaNs.
     if np.isnan(X).any():
-        logger.warning("Data contains NaNs. Filling with 0 (caution).")
+        logger.warning("数据包含 NaN，已用 0 填充，请谨慎解释结果。")
         X = np.nan_to_num(X)
 
-    pca = PCA(n_components=n_components)  # type: ignore
+    pca = PCA(n_components=n_components)
     scores = pca.fit_transform(X)
     components = pca.components_
     variance = pca.explained_variance_ratio_
@@ -113,13 +120,13 @@ def perform_nmf(ds: xr.Dataset, n_components: int = 2, init: str = "nndsvda") ->
 
     X = ds.absorption.values
     if np.any(X < 0):
-        logger.warning("Negative values found in data. NMF requires non-negative data. Clipping to 0.")
+        logger.warning("数据包含负值，NMF 要求非负输入，已截断到 0。")
         X = np.maximum(X, 0)
 
     if np.isnan(X).any():
         X = np.nan_to_num(X)
 
-    nmf = NMF(n_components=n_components, init=init, max_iter=1000)  # type: ignore
+    nmf = NMF(n_components=n_components, init=init, max_iter=1000)
     scores = nmf.fit_transform(X)
     components = nmf.components_
 
@@ -211,12 +218,12 @@ def perform_lcf(
         return y_data - model
 
     # Setup Parameters
-    params = lmfit.Parameters()  # type: ignore
+    params = lmfit.Parameters()
     for name in ref_names:
         params.add(name, value=1.0 / len(ref_names), min=0 if non_negative else -np.inf)
 
     if sum_to_one:
-        # Constraint: Last ref = 1 - sum(others)
+        # 约束：最后一个参考谱权重 = 1 - 其他参考谱权重之和。
         if len(ref_names) > 1:
             expr = "1 - (" + " + ".join(ref_names[:-1]) + ")"
             params[ref_names[-1]].set(expr=expr)
@@ -237,7 +244,7 @@ def perform_lcf(
     for i in range(len(records)):
         mu_exp = mu_all[i][mask]
 
-        result = lmfit.minimize(residual, params, args=(e_fit, mu_exp, ref_matrix))  # type: ignore
+        result = lmfit.minimize(residual, params, args=(e_fit, mu_exp, ref_matrix))
 
         # Extract weights
         # Explicitly ignore type check for result.params
@@ -262,7 +269,7 @@ def perform_lcf(
 
         fit_list.append(model_full)
         resid_list.append(mu_all[i] - model_full)
-        rfactor_list.append(result.redchi)  # type: ignore # Reduced chi-square as proxy
+        rfactor_list.append(result.redchi)
 
     # Build Output
     ds_out = ds.copy()

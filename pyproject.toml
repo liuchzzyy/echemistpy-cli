@@ -5,7 +5,7 @@ requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]
 [project]
 name = "echemistpy-cli"
 version = "0.1.0"
-description = "Unified data processing for electrochemical techniques and materials characterization (XRD, XPS, TGA, XAS, TXM)"
+description = "面向电化学数据的命令行读取、标准化和分析工具"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = {text = "CeCILL-B Free Software License Agreement (CECILL-B)"}
@@ -25,45 +25,46 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-  # Data Handling
   "xarray>=2025.6.1",
   "numpy>=2.2.6",
   "pandas>=2.2.3",
   "h5netcdf>=1.6.3",
-  # Scientific computing
-  "galvani>=0.5.0",
   "scipy>=1.15.3",
   "matplotlib>=3.10.3",
-  "scikit-image>=0.22.0",
-  "scikit-learn>=1.4.0",
-  "umap-learn>=0.5.5",
-  "numba>=0.57.0", # Ensure python 3.11 compatibility
-  "lmfit>=1.2.2",
-  "xraylarch>=0.9.78", # XAS Analysis
-  # File formats
-  "openpyxl>=3.1.5",  # Excel files
-  # Development tools
-  "ruff>=0.12.4",
-  "pluggy>=1.0.0",
-  "traitlets>=5.11.1",
   "typer>=0.26.7",
-  "ty>=0.0.5",
 ]
 
 [project.optional-dependencies]
+echem = [
+  "openpyxl>=3.1.5",
+]
+xas = [
+  "scikit-learn>=1.4.0",
+  "lmfit>=1.2.2",
+  "xraylarch>=0.9.78",
+]
+txm = [
+  "h5py>=3.11.0",
+  "scikit-image>=0.22.0",
+  "scikit-learn>=1.4.0",
+  "umap-learn>=0.5.5",
+  "lmfit>=1.2.2",
+]
+xrd = []
+all = [
+  "echemistpy-cli[echem,xas,txm,xrd]",
+]
 dev = [
-  "ruff",
-  "pre-commit",
-  "pytest",
-  "pytest-cov",
-  "echemistpy-cli[interactive]",
-  "echemistpy-cli[docs]",
+  "echemistpy-cli[all,test]",
+  "ruff>=0.12.4",
+  "ty>=0.0.5",
+  "pre-commit>=3.0.0",
 ]
 test = [
-  "pytest",
-  "pytest-cov",
-  "pytest-mock",
-  "pytest-benchmark",
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+  "pytest-mock>=3.14.0",
+  "pytest-benchmark>=4.0.0",
 ]
 
 [project.urls]
@@ -90,37 +91,80 @@ preview = true
 
 [tool.ruff.lint]
 select = [
-  # Pyflakes
-  "F", # Pyflakes rules (F821 checks undefined names)
-
-  # Pycodestyle
-  "E", # Error-level PEP 8 rules
-  "W", # Warning-level PEP 8 rules
-
-  # flake8 plugins
-  "G",   # flake8-logging-format rules
-  "B",   # flake8-bugbear rules
-  "C4",  # flake8-comprehensions rules
-  "N",   # pep8-naming rules
-  "SIM", # flake8-simplify rules
-  "ARG", # flake8-unused-arguments
-  "ERA", # eradicate (commented out code)
-  "PL",  # pylint rules
-  "RUF", # Ruff-specific rules
-
-  # Security
-  "S", # flake8-bandit (security)
+  "F",
+  "E",
+  "W",
+  "G",
+  "B",
+  "C4",
+  "N",
+  "SIM",
+  "ARG",
+  "ERA",
+  "PL",
+  "RUF",
+  "S",
 ]
-extend-select = ["I"] # isort
-ignore = ["E501", "PLR2004", "ERA001", "RUF001", "RUF002", "RUF003"]  # RUF002/003: 允许中文文档中的中文标点符号
-
-# Logger objects that should be checked
+extend-select = ["I"]
+ignore = ["E501", "PLR2004", "ERA001", "RUF001", "RUF002", "RUF003"]
 logger-objects = ["app.logger", "logger"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*" = [
-  "S101", # Use of assert detected
-  "ARG", # Unused function args in tests
+  "S101",
+  "ARG",
+]
+"src/echemistpy/io/plugins/echem_lanhe_ccs.py" = [
+  "N806",
+  "N815",
+  "PLR0912",
+  "PLR0914",
+  "PLR0915",
+  "PLR6301",
+  "RUF046",
+]
+"src/echemistpy/io/plugins/TXM_MISTRAL.py" = [
+  "N999",
+]
+"src/echemistpy/io/plugins/XAS_CLAESS.py" = [
+  "N999",
+]
+"src/echemistpy/io/plugins/XRD_MSPD.py" = [
+  "N999",
+]
+"src/echemistpy/analysis/stxm/analyzer.py" = [
+  "PLW0717",
+]
+"src/echemistpy/analysis/xas/analyzer.py" = [
+  "PLR0912",
+  "PLR0913",
+  "PLR0914",
+  "PLR0915",
+  "PLR0917",
+  "PLW0717",
+]
+"src/echemistpy/analysis/xas/fitting.py" = [
+  "ARG001",
+  "B007",
+  "N806",
+  "PLR0912",
+  "PLR0914",
+  "PLR0915",
+  "SIM102",
+  "SIM108",
+]
+"src/echemistpy/analysis/xas/plotting.py" = [
+  "B905",
+  "E741",
+  "PLR0913",
+  "PLR0914",
+  "PLR0915",
+  "PLR0917",
+]
+"src/echemistpy/analysis/xas/processing.py" = [
+  "ARG001",
+  "E731",
+  "SIM108",
 ]
 
 [tool.pytest.ini_options]

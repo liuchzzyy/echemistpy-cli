@@ -1,4 +1,4 @@
-"""Inspect command."""
+"""数据检查命令。"""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from echemistpy.io.summary import inspect_data as inspect_path
 
 def inspect_data(
     source: Annotated[Path, typer.Argument(exists=True, readable=True)],
-    fmt: Annotated[str | None, typer.Option("--format", "-f", help="Input format override, such as .ccs.")] = None,
-    instrument: Annotated[str | None, typer.Option("--instrument", "-i", help="Reader instrument name.")] = None,
-    raw: Annotated[bool, typer.Option("--raw", help="Show raw reader names instead of standard schema names.")] = False,
-    as_json: Annotated[bool, typer.Option("--json", help="Print JSON output.")] = False,
+    fmt: Annotated[str | None, typer.Option("--format", "-f", help="输入格式覆盖，例如 .ccs。")] = None,
+    instrument: Annotated[str | None, typer.Option("--instrument", "-i", help="读取器仪器名称。")] = None,
+    raw: Annotated[bool, typer.Option("--raw", help="显示 reader 原始列名，不显示标准 schema 名称。")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="输出 JSON。")] = False,
 ) -> None:
-    """Inspect one supported data file or directory."""
+    """检查一个支持的数据文件或目录。"""
     summary = inspect_path(
         source,
         fmt=fmt,

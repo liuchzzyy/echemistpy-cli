@@ -1,4 +1,4 @@
-"""Command line interface package."""
+"""命令行接口包。"""
 
 from echemistpy.cli.app import app, main
 

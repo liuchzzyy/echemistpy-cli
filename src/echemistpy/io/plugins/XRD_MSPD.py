@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-# ruff: noqa: N999
-"""XRD Data Reader for MSPD .xye files with metadata extraction using traitlets."""
+"""MSPD .xye 格式 XRD 数据读取器。"""
 
 from __future__ import annotations
 
@@ -14,8 +13,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from echemistpy.data.models import RawData, RawDataInfo
-from echemistpy.data.utils import apply_standard_attrs_xrd, merge_infos
+from echemistpy.data.models import DataBundle, Metadata
+from echemistpy.data.utils import apply_standard_attrs_xrd, merge_metadata
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
 
@@ -23,19 +22,18 @@ logger = logging.getLogger(__name__)
 
 
 class MSPDReader(BaseReader):
-    """Reader for MSPD XRD .xye files.
+    """MSPD XRD .xye 文件读取器。
 
-    Supports reading a single .xye file or a directory containing multiple .xye files.
-    When reading a directory, files are organized into an xarray.DataTree.
+    支持读取单个 .xye 文件或包含多个 .xye 文件的目录；目录读取结果组织为 xarray.DataTree。
     """
 
-    # --- Constants ---
+    # --- 解析常量 ---
     DATE_FORMAT: ClassVar[str] = "%Y-%m-%d_%H:%M:%S"
     DEFAULT_TECHNIQUE_SINGLE: ClassVar[list[str]] = ["xrd", "in_situ"]
     DEFAULT_TECHNIQUE_DIR: ClassVar[list[str]] = ["xrd", "operando"]
     INSTRUMENT_NAME: ClassVar[str] = "ALBA_MSPD"
 
-    # --- Loader Metadata ---
+    # --- reader 能力声明 ---
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "alba_mspd"
     spec: ClassVar[ReaderSpec] = ReaderSpec(
@@ -48,38 +46,38 @@ class MSPDReader(BaseReader):
     )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
-        """Initialize the MSPD reader.
+        """初始化 MSPD reader。
 
         Args:
-            filepath: Path to .xye file or directory
-            **kwargs: Additional metadata overrides
+            filepath: .xye 文件或目录路径
+            **kwargs: 额外元数据覆盖项
         """
-        # Technique will be determined later based on file vs directory
+        # 技术类型会根据文件或目录读取方式决定。
         super().__init__(filepath, **kwargs)
 
-    def _load_single_file(self, path: Path, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
-        """Load a single MSPD .xye file.
+    def _load_single_file(self, path: Path, **_kwargs: Any) -> DataBundle:
+        """加载单个 MSPD .xye 文件。
 
         Args:
-            path: Path to the .xye file
-            **kwargs: Additional arguments (unused)
+            path: .xye 文件路径
+            **kwargs: 额外参数（未使用）
 
         Returns:
-            Tuple of (RawData, RawDataInfo)
+            DataBundle 数据包
         """
         ds, metadata = self._read_single_xye(path)
 
-        # Clean and enhance metadata
+        # 清理并补充元数据。
         metadata["file_path"] = str(path)
         cleaned_metadata = self._clean_metadata(metadata, path)
 
-        # Extract wave number
+        # 提取波长。
         wave_val = self._extract_wave_number(cleaned_metadata)
 
-        # Use in_situ technique for single file
+        # 单文件默认视为 in situ 数据。
         technique = list(self.technique) if self.technique != ["unknown"] else self.DEFAULT_TECHNIQUE_SINGLE
 
-        raw_info = RawDataInfo(
+        raw_info = Metadata(
             sample_name=self.sample_name or cleaned_metadata.get("sample_name", path.stem),
             start_time=self.start_time or cleaned_metadata.get("start_time"),
             technique=technique,
@@ -87,10 +85,10 @@ class MSPDReader(BaseReader):
             operator=self.operator or cleaned_metadata.get("operator"),
             active_material_mass=self.active_material_mass or cleaned_metadata.get("active_material_mass"),
             wave_number=wave_val,
-            others=cleaned_metadata,
+            raw_metadata=cleaned_metadata,
         )
 
-        return RawData(data=ds), raw_info
+        return DataBundle(data=ds, meta=raw_info)
 
     @staticmethod
     def _clean_metadata(metadata: dict[str, Any], filepath: Path) -> dict[str, Any]:
@@ -137,7 +135,7 @@ class MSPDReader(BaseReader):
         wavelength = metadata.get("wavelength")
         return str(wavelength) if wavelength is not None else None
 
-    def _load_directory(self, path: Path, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
+    def _load_directory(self, path: Path, **_kwargs: Any) -> DataBundle:
         """Load all MSPD .xye files in a directory into a DataTree.
 
         Args:
@@ -145,7 +143,7 @@ class MSPDReader(BaseReader):
             **kwargs: Additional arguments (unused)
 
         Returns:
-            Tuple of (RawData with DataTree, merged RawDataInfo)
+            Tuple of (DataBundle with DataTree, merged Metadata)
         """
         xye_files = sorted(path.rglob("*.xye"))
         if not xye_files:
@@ -157,30 +155,22 @@ class MSPDReader(BaseReader):
             groups.setdefault(f.parent, []).append(f)
 
         tree_dict: dict[str, xr.Dataset] = {}
-        all_infos: list[RawDataInfo] = []
+        all_infos: list[Metadata] = []
 
         for parent, files in groups.items():
             try:
-                merged_ds, node_infos = self._process_directory_group(files)
-                if merged_ds is None:
-                    continue
-
-                # Determine relative path for the tree
-                if parent == path:
-                    node_path = "/"
-                else:
-                    rel_path = parent.relative_to(path)
-                    node_path = "/" + "/".join(rel_path.parts)
-
-                tree_dict[node_path] = merged_ds
-
-                # Merge and store metadata for this node
-                node_info = self._merge_node_infos(node_infos, parent)
-                merged_ds.attrs.update(node_info.to_dict())
-                all_infos.append(node_info)
-
+                group_result = self._build_directory_node(parent, files, path)
             except Exception as e:
-                logger.error("Failed to load/merge files in %s: %s", parent, e)
+                logger.error("加载或合并 %s 中的文件失败: %s", parent, e)
+                continue
+
+            if group_result is None:
+                continue
+
+            node_path, merged_ds, node_info = group_result
+            tree_dict[node_path] = merged_ds
+            merged_ds.attrs.update(node_info.to_dict())
+            all_infos.append(node_info)
 
         if not tree_dict:
             raise RuntimeError(f"Failed to load any valid .xye files from {path}")
@@ -189,12 +179,22 @@ class MSPDReader(BaseReader):
         tree = xr.DataTree.from_dict(tree_dict, name=path.name)
 
         # Merge all infos for the root
-        root_info = self._merge_infos(all_infos, path)
+        root_info = self._merge_metadata(all_infos, path)
         tree.attrs.update(root_info.to_dict())
 
-        return RawData(data=tree), root_info
+        return DataBundle(data=tree, meta=root_info)
 
-    def _process_directory_group(self, files: list[Path]) -> tuple[xr.Dataset | None, list[RawDataInfo]]:
+    def _build_directory_node(self, parent: Path, files: list[Path], root: Path) -> tuple[str, xr.Dataset, Metadata] | None:
+        """读取一个目录分组并返回 DataTree 节点数据。"""
+        merged_ds, node_infos = self._process_directory_group(files)
+        if merged_ds is None:
+            return None
+
+        node_path = "/" if parent == root else "/" + "/".join(parent.relative_to(root).parts)
+        node_info = self._merge_node_infos(node_infos, parent)
+        return node_path, merged_ds, node_info
+
+    def _process_directory_group(self, files: list[Path]) -> tuple[xr.Dataset | None, list[Metadata]]:
         """Process a group of files in the same directory.
 
         Args:
@@ -207,11 +207,11 @@ class MSPDReader(BaseReader):
         infos = []
         for f in files:
             try:
-                raw_data, raw_info = self._load_single_file(f)
-                datasets.append(raw_data.data)
-                infos.append(raw_info)
+                bundle = self._load_single_file(f)
+                datasets.append(bundle.data)
+                infos.append(bundle.meta)
             except Exception as e:
-                logger.warning("Skipping file %s due to error: %s", f, e)
+                logger.warning("跳过文件 %s，原因: %s", f, e)
 
         if not datasets:
             return None, []
@@ -237,18 +237,18 @@ class MSPDReader(BaseReader):
 
         return merged_ds, infos
 
-    def _merge_node_infos(self, infos: list[RawDataInfo], parent_path: Path) -> RawDataInfo:
-        """Merge RawDataInfo objects for a single directory node.
+    def _merge_node_infos(self, infos: list[Metadata], parent_path: Path) -> Metadata:
+        """Merge Metadata objects for a single directory node.
 
         Args:
-            infos: List of RawDataInfo objects from files in the same directory
+            infos: List of Metadata objects from files in the same directory
             parent_path: Parent directory path
 
         Returns:
-            Merged RawDataInfo
+            Merged Metadata
         """
         if not infos:
-            return RawDataInfo()
+            return Metadata()
 
         # Collect sample names (one per file)
         sample_names = [info.sample_name for info in infos if info.sample_name]
@@ -262,22 +262,22 @@ class MSPDReader(BaseReader):
         # Use directory-specific technique
         technique = list(self.technique) if self.technique != ["unknown"] else self.DEFAULT_TECHNIQUE_DIR
 
-        # Build others dict
-        others = {
+        # 构建节点级 raw_metadata。
+        raw_metadata = {
             "n_files": len(infos),
             "sample_names": sample_names,
             "filenames": [Path(info.get("file_path", "")).name for info in infos if info.get("file_path")],
         }
 
-        # Add lists if multiple unique values
+        # 多个不同值以列表形式保存。
         if len(operators) > 1:
-            others["all_operators"] = operators
+            raw_metadata["all_operators"] = operators
         if len(masses) > 1:
-            others["all_active_material_masses"] = masses
+            raw_metadata["all_active_material_masses"] = masses
         if len(wave_numbers) > 1:
-            others["all_wave_numbers"] = wave_numbers
+            raw_metadata["all_wave_numbers"] = wave_numbers
 
-        return RawDataInfo(
+        return Metadata(
             sample_name=self.sample_name or parent_path.name,
             technique=technique,
             instrument=self.instrument,
@@ -285,28 +285,28 @@ class MSPDReader(BaseReader):
             start_time=self.start_time or (start_times[0] if len(start_times) == 1 else None),
             active_material_mass=self.active_material_mass or (masses[0] if len(masses) == 1 else None),
             wave_number=self.wave_number or (wave_numbers[0] if len(wave_numbers) == 1 else None),
-            others=others,
+            raw_metadata=raw_metadata,
         )
 
-    def _merge_infos(self, infos: list[RawDataInfo], root_path: Path) -> RawDataInfo:
-        """Merge multiple RawDataInfo objects from different directories.
+    def _merge_metadata(self, infos: list[Metadata], root_path: Path) -> Metadata:
+        """Merge multiple Metadata objects from different directories.
 
         Args:
-            infos: List of RawDataInfo objects from subdirectories
+            infos: List of Metadata objects from subdirectories
             root_path: Root path for determining folder name
 
         Returns:
-            Merged RawDataInfo
+            Merged Metadata
         """
         if not infos:
-            return RawDataInfo()
+            return Metadata()
 
         # Collect all sample names from all subdirectories
         all_sample_names = []
         for info in infos:
-            # Each info might have multiple sample_names in its 'others'
-            if "sample_names" in info.others:
-                all_sample_names.extend(info.others["sample_names"])
+            # 每个节点的 raw_metadata 中可能包含多个 sample_names。
+            if "sample_names" in info.raw_metadata:
+                all_sample_names.extend(info.raw_metadata["sample_names"])
             elif info.sample_name:
                 all_sample_names.append(info.sample_name)
 
@@ -314,10 +314,10 @@ class MSPDReader(BaseReader):
         technique = list(self.technique) if self.technique != ["unknown"] else self.DEFAULT_TECHNIQUE_DIR
 
         # Calculate total files
-        total_files = sum(info.others.get("n_files", 1) for info in infos)
+        total_files = sum(info.raw_metadata.get("n_files", 1) for info in infos)
 
-        # Use merge_infos from utils for common logic
-        merged_info = merge_infos(
+        # Use merge_metadata from utils for common logic
+        merged_info = merge_metadata(
             infos,
             root_path,
             sample_name_override=self.sample_name,
@@ -330,8 +330,8 @@ class MSPDReader(BaseReader):
         )
 
         # Update with MSPD-specific fields
-        merged_info.others["sample_names"] = all_sample_names
-        merged_info.others["n_files"] = total_files
+        merged_info.raw_metadata["sample_names"] = all_sample_names
+        merged_info.raw_metadata["n_files"] = total_files
 
         return merged_info
 
@@ -357,7 +357,7 @@ class MSPDReader(BaseReader):
                 engine="python",
             )
         except Exception as e:
-            logger.error("Error reading %s: %s", filepath, e)
+            logger.error("读取 %s 出错: %s", filepath, e)
             raise
 
         # Create xarray Dataset
@@ -423,21 +423,21 @@ class MSPDReader(BaseReader):
         """Determine the wavelength to use for d-spacing calculation.
 
         Args:
-            metadata: Metadata dictionary from file
+            metadata: 文件中的元数据字典
 
         Returns:
-            Wavelength in Angstroms, or None if not available
+            埃为单位的波长；无法获取时返回 None
         """
         if self.wave_number:
             try:
                 return float(self.wave_number)
             except ValueError:
-                logger.warning("Invalid wave_number trait: %s", self.wave_number)
+                logger.warning("无效 wave_number 配置: %s", self.wave_number)
         return metadata.get("Wave")
 
     @staticmethod
     def calculate_d_spacing(two_theta: np.ndarray, wavelength: float) -> np.ndarray:
-        """Calculate d-spacing from 2theta and wavelength using Bragg's Law.
+        """根据 2theta 和波长使用布拉格定律计算 d-spacing。
 
         Bragg's Law: nλ = 2d sinθ
         For n=1: d = λ / (2 sinθ)

@@ -1,4 +1,4 @@
-"""Compatibility entry point for echemistpy CLI."""
+"""echemistpy CLI 入口。"""
 
 from echemistpy.cli.app import app, main
 

@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-# ruff: noqa: N999
-"""XAS Data Reader for ALBA CLAESS beamline files."""
+"""ALBA CLAESS 线站 XAS 文件读取器。"""
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -15,9 +13,8 @@ from typing import Any, ClassVar
 import numpy as np
 import pandas as pd
 import xarray as xr
-from scipy.interpolate import interp1d
 
-from echemistpy.data.models import RawData, RawDataInfo
+from echemistpy.data.models import DataBundle, Metadata
 from echemistpy.data.utils import apply_standard_attrs_xas
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
@@ -70,15 +67,15 @@ class CLAESSReader(BaseReader):
             kwargs["technique"] = self.DEFAULT_TECHNIQUE
         super().__init__(filepath, **kwargs)
 
-    def load(self, edges: list[str] | None = None, **kwargs: Any) -> tuple[RawData, RawDataInfo]:
-        """Load CLAESS file(s) and return RawData and RawDataInfo.
+    def load(self, edges: list[str] | None = None, **kwargs: Any) -> DataBundle:
+        """Load CLAESS file(s) and return DataBundle and Metadata.
 
         Args:
             edges: Optional list of absorption edges to filter by
             **kwargs: Additional arguments
 
         Returns:
-            Tuple of (RawData, RawDataInfo)
+            Tuple of (DataBundle, Metadata)
         """
         if not self.filepath:
             raise ValueError("filepath must be set before calling load()")
@@ -94,7 +91,7 @@ class CLAESSReader(BaseReader):
 
         raise ValueError(f"Path is neither a file nor a directory: {path}")
 
-    def _load_single_file(self, path: Path, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
+    def _load_single_file(self, path: Path, **_kwargs: Any) -> DataBundle:
         """Internal method to load a single CLAESS file.
 
         Args:
@@ -102,7 +99,7 @@ class CLAESSReader(BaseReader):
             **_kwargs: Additional arguments (unused, prefixed with _ to silence linter)
 
         Returns:
-            Tuple of (RawData, RawDataInfo)
+            Tuple of (DataBundle, Metadata)
         """
         if path.suffix.lower() != ".dat":
             raise ValueError(f"Unsupported file extension: {path.suffix}")
@@ -122,15 +119,15 @@ class CLAESSReader(BaseReader):
         if isinstance(data, xr.Dataset):
             apply_standard_attrs_xas(data)
 
-        raw_info = RawDataInfo(
+        raw_info = Metadata(
             sample_name=self.sample_name or path.stem,
             technique=list(self.technique),
             instrument=self.instrument,
             start_time=metadata.get("start_time"),
-            others={"sample_names": [self.sample_name or path.stem], "n_files": n_records},
+            raw_metadata={"sample_names": [self.sample_name or path.stem], "n_files": n_records},
         )
 
-        return RawData(data=data), raw_info
+        return DataBundle(data=data, meta=raw_info)
 
     def _clean_data(self, data: xr.Dataset | xr.DataTree) -> xr.Dataset | xr.DataTree:
         """Keep only specific columns defined in selected_columns.
@@ -260,30 +257,39 @@ class CLAESSReader(BaseReader):
             columns = [f"col_{i}" for i in range(len(data_lines[0]))]
 
         try:
-            df = pd.DataFrame(data_lines, columns=list(columns)).astype(float)  # type: ignore
-            # Calculate absorption if possible
-            if all(c in df.columns for c in ["a_i0_1", "a_i0_2", "a_i1_1", "a_i1_2"]):
-                ratio = (df["a_i0_1"] + df["a_i0_2"]) / (df["a_i1_1"] + df["a_i1_2"])
-                df["absorption"] = np.log(ratio.where(ratio > 0))
-
-            if "energyc" in df.columns:
-                df = df.drop_duplicates(subset=["energyc"]).set_index("energyc")
-
-            return scan_id, df.to_xarray(), scan_time
+            return scan_id, self._scan_lines_to_dataset(data_lines, columns), scan_time
         except Exception as e:
-            logger.warning("Failed to parse scan %s in %s: %s", scan_id, path, e)
+            logger.warning("解析 %s 中的扫描 %s 失败: %s", path, scan_id, e)
             return scan_id, None, None
 
     @staticmethod
+    def _scan_lines_to_dataset(data_lines: list[list[Any]], columns: list[str]) -> xr.Dataset:
+        """将单个扫描的数据行转换为 Dataset。"""
+        df = pd.DataFrame(data_lines, columns=columns).astype(float)
+        if all(column in df.columns for column in ["a_i0_1", "a_i0_2", "a_i1_1", "a_i1_2"]):
+            ratio = (df["a_i0_1"] + df["a_i0_2"]) / (df["a_i1_1"] + df["a_i1_2"])
+            df["absorption"] = np.log(ratio.where(ratio > 0))
+
+        if "energyc" in df.columns:
+            df = df.drop_duplicates(subset=["energyc"]).set_index("energyc")
+
+        return df.to_xarray()
+
+    @staticmethod
     def _interpolate_datasets(ds_list: list[xr.Dataset]) -> list[xr.Dataset]:
-        """Interpolate multiple datasets onto a common energy grid.
+        """将多个 Dataset 插值到统一能量网格。
 
         Args:
-            ds_list: List of xarray Datasets
+            ds_list: xarray Dataset 列表
 
         Returns:
-            List of interpolated Datasets
+            插值后的 Dataset 列表
         """
+        try:
+            from scipy.interpolate import interp1d  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError("XAS 插值读取需要安装 echemistpy-cli[xas]。") from exc
+
         all_energies = [ds.energyc.values for ds in ds_list if "energyc" in ds.coords]
         if not all_energies:
             return ds_list
@@ -344,16 +350,9 @@ class CLAESSReader(BaseReader):
 
         if len(datasets) > 1:
             try:
-                ds_list = self._interpolate_datasets(list(datasets.values()))
-                combined = xr.concat(ds_list, dim="record")
-                scan_ids = list(datasets.keys())
-                combined = combined.assign_coords(record=np.arange(1, len(datasets) + 1))
-                combined = combined.assign_coords(file_name=("record", [name] * len(datasets)))
-                combined = self._calculate_scan_times(combined, scan_ids, scan_times)
-                combined.attrs["start_time"] = start_time
-                return combined
+                return self._concat_scan_datasets(datasets, scan_times, name, start_time)
             except Exception as e:
-                logger.warning("Failed to merge scans for %s: %s. Returning DataTree instead.", name, e)
+                logger.warning("合并 %s 的扫描失败: %s。改为返回 DataTree。", name, e)
 
         if len(datasets) == 1:
             ds = next(iter(datasets.values()))
@@ -368,6 +367,24 @@ class CLAESSReader(BaseReader):
         return xr.DataTree.from_dict(datasets, name=name)
 
     @classmethod
+    def _concat_scan_datasets(
+        cls,
+        datasets: dict[str, xr.Dataset],
+        scan_times: dict[str, datetime],
+        name: str,
+        start_time: str | None,
+    ) -> xr.Dataset:
+        """将多个扫描 Dataset 拼接到统一 record 维度。"""
+        ds_list = cls._interpolate_datasets(list(datasets.values()))
+        combined = xr.concat(ds_list, dim="record")
+        scan_ids = list(datasets.keys())
+        combined = combined.assign_coords(record=np.arange(1, len(datasets) + 1))
+        combined = combined.assign_coords(file_name=("record", [name] * len(datasets)))
+        combined = cls._calculate_scan_times(combined, scan_ids, scan_times)
+        combined.attrs["start_time"] = start_time
+        return combined
+
+    @classmethod
     def parse_date(cls, date_str: str) -> datetime:
         """Parse SPEC date format: Thu Dec 11 12:52:40 2025.
 
@@ -379,7 +396,7 @@ class CLAESSReader(BaseReader):
         """
         return datetime.strptime(date_str, cls.DATE_FORMAT)
 
-    def _load_directory(self, path: Path, edges: list[str] | None = None, **_kwargs: Any) -> tuple[RawData, RawDataInfo]:
+    def _load_directory(self, path: Path, edges: list[str] | None = None, **_kwargs: Any) -> DataBundle:
         """Load all relevant files in a directory.
 
         Args:
@@ -388,21 +405,21 @@ class CLAESSReader(BaseReader):
             **_kwargs: Additional arguments (unused, prefixed with _ to silence linter)
 
         Returns:
-            Tuple of (RawData with DataTree, merged RawDataInfo)
+            Tuple of (DataBundle with DataTree, merged Metadata)
         """
         all_files = list(path.rglob("*.dat"))
         relevant_files = [f for f in all_files if not re.search(r"_\d{3}$", f.stem)]
 
         if not relevant_files:
-            raise FileNotFoundError(f"No relevant .dat files found in {path}")
+            raise FileNotFoundError(f"在 {path} 中未找到相关 .dat 文件。")
 
         if edges is None:
             edges = self._auto_detect_edges_from_folders(relevant_files)
             if edges:
-                logger.info("Auto-detected edges from folder names: %s", edges)
+                logger.info("从文件夹名称自动识别吸收边: %s", edges)
 
         tree = xr.DataTree(name=path.name)
-        all_infos: list[RawDataInfo] = []
+        all_infos: list[Metadata] = []
 
         if edges:
             groups = self._group_files_by_edge(relevant_files, edges, path)
@@ -411,25 +428,30 @@ class CLAESSReader(BaseReader):
         else:
             for f in sorted(relevant_files):
                 try:
-                    raw_data, raw_info = self._load_single_file(f)
-                    rel_path = f.relative_to(path)
-                    node_name = str(rel_path.with_suffix("")).replace("\\", "_").replace("/", "_")
-
-                    if isinstance(raw_data.data, xr.DataTree):
-                        for name_path, child in raw_data.data.children.items():
-                            tree[f"{node_name}/{name_path}"] = child
-                    else:
-                        tree[node_name] = raw_data.data
-                    all_infos.append(raw_info)
+                    bundle = self._load_single_file(f)
+                    self._add_bundle_to_tree(tree, bundle, f.relative_to(path))
+                    all_infos.append(bundle.meta)
                 except Exception as e:
-                    logger.warning("Failed to load file %s: %s", f, e)
+                    logger.warning("加载文件 %s 失败: %s", f, e)
 
         if not tree.children and not tree.has_data:
-            raise RuntimeError(f"Failed to load any relevant files from {path}")
+            raise RuntimeError(f"未能从 {path} 加载任何相关文件。")
 
-        root_info = self._merge_infos(all_infos, path)
-        tree.attrs = {"file_name": [info.sample_name for info in all_infos], "n_files": root_info.others.get("n_files")}
-        return RawData(data=tree), root_info
+        root_info = self._merge_metadata(all_infos, path)
+        tree.attrs = {"file_name": [info.sample_name for info in all_infos], "n_files": root_info.raw_metadata.get("n_files")}
+        return DataBundle(data=tree, meta=root_info)
+
+    @staticmethod
+    def _add_bundle_to_tree(tree: xr.DataTree, bundle: DataBundle, rel_path: Path) -> None:
+        """把单文件读取结果写入目录 DataTree。"""
+        node_name = str(rel_path.with_suffix("")).replace("\\", "_").replace("/", "_")
+
+        if isinstance(bundle.data, xr.DataTree):
+            for name_path, child in bundle.data.children.items():
+                tree[f"{node_name}/{name_path}"] = child
+            return
+
+        tree[node_name] = bundle.data
 
     @staticmethod
     def _auto_detect_edges_from_folders(files: list[Path]) -> list[str] | None:
@@ -584,7 +606,7 @@ class CLAESSReader(BaseReader):
                 groups[key].append(f)
         return groups
 
-    def _process_edge_group(self, edge: str, clean_rel_path: str, files: list[Path], tree: xr.DataTree) -> list[RawDataInfo]:
+    def _process_edge_group(self, edge: str, clean_rel_path: str, files: list[Path], tree: xr.DataTree) -> list[Metadata]:
         """Process a group of files for a specific edge and path.
 
         Args:
@@ -594,7 +616,7 @@ class CLAESSReader(BaseReader):
             tree: DataTree to populate
 
         Returns:
-            List of RawDataInfo objects
+            List of Metadata objects
         """
         all_datasets: dict[str, xr.Dataset] = {}
         all_scan_times: dict[str, datetime] = {}
@@ -606,7 +628,7 @@ class CLAESSReader(BaseReader):
                 for k, v in st_dict.items():
                     all_scan_times[f"{f.stem}_{k}"] = v
             except Exception as e:
-                logger.warning("Failed to parse %s: %s", f, e)
+                logger.warning("解析 %s 失败: %s", f, e)
 
         if not all_datasets:
             return []
@@ -616,9 +638,8 @@ class CLAESSReader(BaseReader):
             return []
         merged_ds = self._clean_data(merged_ds)
 
-        # Determine a name for this dataset node
         stems = [f.stem for f in files]
-        ds_name = stems[0] if len(files) == 1 else os.path.commonprefix(stems).rstrip("_")
+        ds_name = stems[0] if len(files) == 1 else self._common_name_prefix(stems).rstrip("_")
         if not ds_name or len(ds_name) <= 2:
             ds_name = "merged_data"
 
@@ -628,18 +649,18 @@ class CLAESSReader(BaseReader):
         try:
             tree[full_node_name] = merged_ds
         except Exception as e:
-            logger.warning("Alignment failed for %s: %s. Renaming.", full_node_name, e)
+            logger.warning("%s 对齐失败: %s。将改名保存。", full_node_name, e)
             with contextlib.suppress(Exception):
                 tree[f"{full_node_name}_data"] = merged_ds
 
         n_records = len(merged_ds.record) if "record" in merged_ds.dims else 1
         return [
-            RawDataInfo(
+            Metadata(
                 sample_name=ds_name,
                 technique=list(self.technique),
                 instrument=self.instrument,
                 start_time=merged_ds.attrs.get("start_time"),
-                others={"n_files": n_records},
+                raw_metadata={"n_files": n_records},
             )
         ]
 
@@ -669,18 +690,18 @@ class CLAESSReader(BaseReader):
 
         return f"{edge}/{clean_rel_path}/{ds_name}"
 
-    def _merge_infos(self, infos: list[RawDataInfo], root_path: Path) -> RawDataInfo:
-        """Merge multiple RawDataInfo objects into one.
+    def _merge_metadata(self, infos: list[Metadata], root_path: Path) -> Metadata:
+        """Merge multiple Metadata objects into one.
 
         Args:
-            infos: List of RawDataInfo objects
+            infos: List of Metadata objects
             root_path: Root path
 
         Returns:
-            Merged RawDataInfo
+            Merged Metadata
         """
         if not infos:
-            return RawDataInfo()
+            return Metadata()
 
         base = infos[0]
         all_techs = set()
@@ -690,17 +711,29 @@ class CLAESSReader(BaseReader):
         for info in infos:
             for t in info.technique:
                 all_techs.add(t)
-            n = info.others.get("n_files")
+            n = info.raw_metadata.get("n_files")
             total_files += n if n is not None else 1
             sample_names.append(info.sample_name)
 
-        return RawDataInfo(
+        return Metadata(
             sample_name=self.sample_name or root_path.name,
             technique=list(all_techs),
             instrument=base.instrument,
             start_time=base.start_time,
-            others={"n_files": total_files, "root_path": str(root_path), "sample_names": sample_names},
+            raw_metadata={"n_files": total_files, "root_path": str(root_path), "sample_names": sample_names},
         )
+
+    @staticmethod
+    def _common_name_prefix(names: list[str]) -> str:
+        """返回多个文件名的公共文本前缀。"""
+        if not names:
+            return ""
+
+        prefix = names[0]
+        for name in names[1:]:
+            while prefix and not name.startswith(prefix):
+                prefix = prefix[:-1]
+        return prefix
 
     @staticmethod
     def _get_file_extension() -> str:

@@ -1,4 +1,4 @@
-"""High-level orchestration for data analysis workflows."""
+"""数据分析流程编排。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from echemistpy.data.models import AnalysisBundle
 from echemistpy.io import load
-from echemistpy.data.models import AnalysisData, AnalysisDataInfo
 
 from .registry import TechniqueRegistry, create_default_registry
 
@@ -15,17 +15,13 @@ logger = logging.getLogger(__name__)
 
 
 class AnalysisPipeline:
-    """Orchestrates loading, analysis, and result management.
-
-    This class provides a unified interface for processing experimental data
-    files from raw format to analyzed results.
-    """
+    """编排加载、分析和结果返回。"""
 
     def __init__(self, registry: TechniqueRegistry | None = None) -> None:
-        """Initialize the pipeline with an analyzer registry.
+        """初始化分析流程。
 
         Args:
-            registry: Optional custom registry. If None, uses the default registry.
+            registry: 可选分析器注册表；为空时使用默认注册表。
         """
         self.registry = registry or create_default_registry()
 
@@ -35,69 +31,69 @@ class AnalysisPipeline:
         technique: str | None = None,
         instrument: str | None = None,
         **kwargs: Any,
-    ) -> tuple[AnalysisData, AnalysisDataInfo]:
-        """Run the full pipeline for a single file.
+    ) -> AnalysisBundle:
+        """运行完整分析流程并返回 AnalysisBundle。
 
         Args:
-            path: Path to the data file
-            technique: Technique identifier (if None, will try to detect from file)
-            instrument: Instrument identifier (passed to loader)
-            **kwargs: Additional arguments passed to both loader and analyzer
+            path: 数据文件路径
+            technique: 技术类型；为空时从元数据推断
+            instrument: 仪器标识符
+            **kwargs: 传给加载器和分析器的额外参数
 
         Returns:
-            Tuple of (AnalysisData, AnalysisDataInfo)
+            分析结果数据包
 
         Raises:
-            ValueError: If technique cannot be determined or analyzer is missing
-            FileNotFoundError: If the specified path does not exist
+            ValueError: 无法确定技术类型或找不到分析器
+            FileNotFoundError: 数据文件不存在
         """
         # 验证输入路径
         path_obj = Path(path)
         if not path_obj.exists():
-            raise FileNotFoundError(f"Data file not found: {path}")
+            raise FileNotFoundError(f"数据文件不存在: {path}")
 
-        logger.info("Starting analysis pipeline for: %s", path)
+        logger.info("开始分析流程: %s", path)
 
-        # 1. Load data
+        # 1. 加载数据
         try:
-            logger.debug("Loading data from %s", path)
-            raw_data, raw_info = load(path, technique=technique, instrument=instrument, **kwargs)
-            logger.debug("Data loaded successfully. Technique: %s, Instrument: %s", raw_info.technique, raw_info.instrument)
+            logger.debug("加载数据: %s", path)
+            raw_bundle = load(path, technique=technique, instrument=instrument, **kwargs)
+            raw_info = raw_bundle.meta
+            logger.debug("数据加载成功。技术类型: %s, 仪器: %s", raw_info.technique, raw_info.instrument)
         except Exception as e:
-            logger.error("Failed to load data from %s: %s", path, e)
+            logger.error("加载数据失败 %s: %s", path, e)
             raise
 
-        # 2. Determine technique
+        # 2. 确定技术类型
         if technique is None:
-            # Try to get technique from raw_info
             techniques = raw_info.technique
-            if techniques and techniques[0] != "Unknown":
+            if techniques and techniques[0] != "unknown":
                 technique = techniques[0]
-                logger.debug("Auto-detected technique: %s", technique)
+                logger.debug("自动识别技术类型: %s", technique)
             else:
-                error_msg = f"Could not detect technique for {path}. Please specify 'technique' explicitly."
+                error_msg = f"无法识别 {path} 的技术类型，请显式指定 technique。"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
-        # 3. Get analyzer
+        # 3. 获取分析器
         try:
             analyzer = self.registry.get_analyzer(technique, raw_info.instrument)
-            logger.debug("Using analyzer: %s", analyzer.name)
+            logger.debug("使用分析器: %s", analyzer.name)
         except KeyError as exc:
-            error_msg = f"No analyzer registered for technique '{technique}' and instrument '{raw_info.instrument}'."
+            error_msg = f"未注册 technique='{technique}' 且 instrument='{raw_info.instrument}' 的分析器。"
             logger.error(error_msg)
             available_techniques = self.registry.available()
-            logger.info("Available techniques: %s", available_techniques)
+            logger.info("可用技术类型: %s", available_techniques)
             raise ValueError(error_msg) from exc
 
-        # 4. Analyze
+        # 4. 执行分析
         try:
-            logger.debug("Running analysis with %s", analyzer.name)
-            results_data, results_info = analyzer.analyze(raw_data, raw_info, **kwargs)
-            logger.info("Analysis completed successfully for: %s", path)
-            return results_data, results_info
+            logger.debug("运行分析器: %s", analyzer.name)
+            result_bundle = analyzer.analyze(raw_bundle, **kwargs)
+            logger.info("分析完成: %s", path)
+            return result_bundle
         except Exception as e:
-            logger.error("Analysis failed for %s: %s", path, e)
+            logger.error("分析失败 %s: %s", path, e)
             raise
 
 
@@ -106,17 +102,17 @@ def run_analysis(
     technique: str | None = None,
     instrument: str | None = None,
     **kwargs: Any,
-) -> tuple[AnalysisData, AnalysisDataInfo]:
-    """Convenience function to run analysis on a file using default settings.
+) -> AnalysisBundle:
+    """使用默认注册表运行分析。
 
     Args:
-        path: Path to the data file
-        technique: Technique identifier
-        instrument: Instrument identifier
-        **kwargs: Additional arguments
+        path: 数据文件路径
+        technique: 技术类型
+        instrument: 仪器标识符
+        **kwargs: 额外参数
 
     Returns:
-        Tuple of (AnalysisData, AnalysisDataInfo)
+        分析结果数据包
     """
     pipeline = AnalysisPipeline()
     return pipeline.run(path, technique=technique, instrument=instrument, **kwargs)

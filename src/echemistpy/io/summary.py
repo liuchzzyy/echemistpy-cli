@@ -1,4 +1,4 @@
-"""Data inspection helpers for loaded datasets."""
+"""已加载数据的检查摘要工具。"""
 
 from __future__ import annotations
 
@@ -8,14 +8,13 @@ from typing import Any
 
 import xarray as xr
 
-from echemistpy.data.models import RawData, RawDataInfo
-from echemistpy.data.schema import RAW_SCHEMA
+from echemistpy.data.models import DataBundle
 from echemistpy.io.loaders import load
 
 
 @dataclass(frozen=True)
 class DataSummary:
-    """Small JSON-safe summary for one loaded dataset."""
+    """单个已加载数据集的 JSON 安全摘要。"""
 
     path: str
     schema: str
@@ -28,25 +27,23 @@ class DataSummary:
     coords: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe dictionary."""
+        """返回 JSON 安全字典。"""
         return asdict(self)
 
 
 def summarize_data(
-    raw_data: RawData,
-    raw_info: RawDataInfo,
+    bundle: DataBundle,
     path: str | Path,
-    schema: str = RAW_SCHEMA,
 ) -> DataSummary:
-    """Build an inspection summary from loaded data."""
-    dataset = _root_dataset(raw_data.data)
+    """根据 DataBundle 生成检查摘要。"""
+    dataset = _root_dataset(bundle.data)
     return DataSummary(
         path=str(path),
-        schema=schema,
-        sample_name=raw_info.sample_name,
-        instrument=raw_info.instrument,
-        technique=tuple(raw_info.technique),
-        is_tree=raw_data.is_tree,
+        schema=bundle.schema,
+        sample_name=bundle.meta.sample_name,
+        instrument=bundle.meta.instrument,
+        technique=tuple(bundle.meta.technique),
+        is_tree=isinstance(bundle.data, xr.DataTree),
         dims={str(name): int(size) for name, size in dataset.sizes.items()},
         variables=tuple(str(name) for name in dataset.data_vars),
         coords=tuple(str(name) for name in dataset.coords),
@@ -60,14 +57,14 @@ def inspect_data(
     instrument: str | None = None,
     standardize: bool = True,
 ) -> DataSummary:
-    """Load a path and return a concise data summary."""
-    raw_data, raw_info = load(
+    """加载路径并返回简洁的数据摘要。"""
+    bundle = load(
         path,
         fmt=fmt,
         instrument=instrument,
         standardize=standardize,
     )
-    return summarize_data(raw_data, raw_info, path)
+    return summarize_data(bundle, path)
 
 
 def _root_dataset(data: xr.Dataset | xr.DataTree) -> xr.Dataset:

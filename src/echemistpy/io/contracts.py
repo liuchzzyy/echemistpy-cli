@@ -1,4 +1,4 @@
-"""I/O contracts used by readers and registries."""
+"""reader 和注册表使用的 I/O 契约。"""
 
 from __future__ import annotations
 

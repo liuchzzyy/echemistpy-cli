@@ -1,4 +1,4 @@
-"""Visualization module for XAS analysis."""
+"""XAS 分析结果可视化模块。"""
 
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def plot_echem_xas(
                 extract_points(node.dataset, label_prefix=name_str)
 
     if not xas_points:
-        logger.warning("No XAS timestamps found matching '%s'", xas_time_col)
+        logger.warning("未找到匹配 '%s' 的 XAS 时间戳。", xas_time_col)
         return fig
 
     # 3. Interpolate Voltage for XAS points
@@ -140,7 +140,7 @@ def plot_echem_xas(
         # Interpolate voltage
         df_xas["voltage"] = np.interp(t_xas_nums, t_echem_nums, volts)
     except Exception as e:
-        logger.error("Failed to interpolate voltage for XAS points: %s", e)
+        logger.error("为 XAS 点插值电压失败: %s", e)
         return fig
 
     # 4. Scatter Plot by Group
@@ -175,6 +175,6 @@ def plot_echem_xas(
 
     if output_path:
         plt.savefig(output_path, dpi=300)
-        logger.info("Saved LC plot to %s", output_path)
+    logger.info("LC 图已保存到 %s", output_path)
 
     return fig

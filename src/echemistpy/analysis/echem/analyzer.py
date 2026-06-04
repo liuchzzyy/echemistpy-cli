@@ -1,85 +1,45 @@
-"""Electrochemical analysis helpers."""
+"""电化学分析辅助函数。"""
 
 from __future__ import annotations
 
 import warnings
-from typing import Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-from traitlets import Bool, Float, Unicode
-from traitlets import List as TList
 
 from echemistpy.analysis.registry import TechniqueAnalyzer
-from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData
+from echemistpy.data.models import AnalysisBundle, DataBundle
 
 
 class GalvanostaticAnalyzer(TechniqueAnalyzer):
-    """Analyze galvanostatic (constant-current) experiments.
+    """分析恒流充放电实验。
 
-    Produces capacity (cumulative charge) vs time, start/end/average potentials,
-    and a normalized potential for visualization.
+    生成容量（累计电荷）- 时间、电位统计和可视化用归一化序列。
     """
 
-    technique = Unicode("galvanostatic", help="Technique identifier")
-    supported_techniques = TList(
-        Unicode(),
-        default_value=["galvanostatic", "echem", "gpcl", "gcd"],
-        help="List of supported technique identifiers",
-    )
+    technique = "galvanostatic"
+    supported_techniques = ("galvanostatic", "echem", "gpcl", "gcd")
 
     # 数据列配置
-    time_columns = TList(
-        Unicode(),
-        default_value=["time_s", "systime"],
-        help="Candidate time column names in order of preference",
-    )
-    potential_columns = TList(
-        Unicode(),
-        default_value=["ewe_v", "voltage_v", "ece_v"],
-        help="Candidate potential/voltage column names in order of preference",
-    )
-    current_columns = TList(
-        Unicode(),
-        default_value=["current_ma", "current_ua"],
-        help="Candidate current column names in order of preference",
-    )
-    capacity_columns = TList(
-        Unicode(),
-        default_value=["capacity_mah", "capacity_uah", "specific_capacity_mah_g"],
-        help="Candidate capacity column names in order of preference",
-    )
+    time_columns = ("time_s", "systime")
+    potential_columns = ("ewe_v", "voltage_v", "ece_v")
+    current_columns = ("current_ma", "current_ua")
+    capacity_columns = ("capacity_mah", "capacity_uah", "specific_capacity_mah_g")
 
     # 分析选项
-    calculate_ce = Bool(
-        True,
-        help="Whether to calculate coulombic efficiency if cycle_number is present",
-    )
-    ce_order = Unicode(
-        "discharge",
-        help="Order of CE calculation: 'discharge' (CE=discharge/charge, first negative current as first cycle) or 'charge' (CE=charge/discharge, first positive current as first cycle)",
-    )
+    calculate_ce = True
+    ce_order = "discharge"
 
     # 电荷容量计算参数
     # 默认值 3600 用于将秒转换为小时 (mAh = mA * s / 3600)
-    time_unit_conversion = Float(
-        3600.0,
-        help="Conversion factor from time unit to hours (default: 3600 for seconds to hours)",
-    )
+    time_unit_conversion = 3600.0
 
     # 库伦效率计算参数
-    ce_min_charge_threshold = Float(
-        1e-6,
-        help="Minimum charge capacity (mAh) to consider CE calculation valid (avoid division by zero)",
-    )
+    ce_min_charge_threshold = 1e-6
 
     # 归一化范围参数
-    normalization_range = TList(
-        Float(),
-        default_value=[0.0, 1.0],
-        help="Normalization range for time/capacity sequences [min, max]",
-    )
+    normalization_range = (0.0, 1.0)
 
     # 归一化方式参数
     # None 或不指定: 全局归一化所有数据（默认）
@@ -87,15 +47,23 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
     normalize_per_cycle: list[int] | None = None
 
     def __init__(self, **kwargs):
-        """Initialize GalvanostaticAnalyzer.
+        """初始化 GalvanostaticAnalyzer。
 
         Args:
-            normalize_per_cycle: Normalization mode:
-                - None: Global normalization across all data (default)
-                - list[int]: Normalize only specified cycle numbers together (e.g., [1, 2, 3])
-            **kwargs: Other parameters for TechniqueAnalyzer
+            normalize_per_cycle: 归一化模式；None 表示全局归一化，list[int] 表示仅合并指定循环归一化。
+            **kwargs: TechniqueAnalyzer 的其他参数。
         """
         super().__init__(**kwargs)
+
+    @staticmethod
+    def _bundle_dataset(bundle: DataBundle) -> xr.Dataset:
+        """从 DataBundle 中取出可分析的根 Dataset。"""
+        data = bundle.data
+        if isinstance(data, xr.Dataset):
+            return data
+        if data.dataset is None:
+            raise ValueError("DataTree 根节点没有可用于恒流分析的 Dataset。")
+        return data.dataset
 
     @staticmethod
     def _pick(ds: xr.Dataset, candidates: list[str]) -> str | None:
@@ -117,17 +85,16 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         return None
 
     @staticmethod
-    def _get_column_candidates(trait_list: Any) -> list[str]:
-        """将 traitlets List 转换为普通 list[str] 供类型检查使用.
+    def _get_column_candidates(columns: list[str] | tuple[str, ...] | None) -> list[str]:
+        """将候选列配置转换为普通 ``list[str]``。
 
         Args:
-            trait_list: TList[Unicode] trait
+            columns: 候选列配置
 
         Returns:
             list[str]
         """
-        # 在运行时, TList 就是 list, 但类型检查器需要显式转换
-        return list(trait_list) if trait_list else []
+        return list(columns) if columns else []
 
     @property
     def required_columns(self) -> tuple[str, ...]:
@@ -171,10 +138,9 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         if np.issubdtype(getattr(time_array, "dtype", object), np.datetime64):
             t_pd = pd.to_datetime(time_array)
             return (t_pd - t_pd[0]).total_seconds().to_numpy()
-        else:
-            return np.asarray(time_array, dtype=float)
+        return np.asarray(time_array, dtype=float)
 
-    def validate(self, raw_data: RawData) -> None:
+    def validate(self, bundle: DataBundle) -> None:
         """验证数据是否适合此分析器.
 
         基本验证由基类的 validate() 方法处理（检查 required_columns）。
@@ -184,11 +150,11 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         # 这里只需要验证数据本身的完整性
         pass
 
-    def preprocess(self, raw_data: RawData) -> RawData:
+    def preprocess(self, bundle: DataBundle) -> DataBundle:
         """按时间排序并添加数值型时间坐标.
 
         Args:
-            raw_data: 原始数据容器
+            bundle: 原始数据包
 
         Returns:
             预处理后的数据容器, 包含数值型时间坐标
@@ -196,28 +162,24 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         Raises:
             ValueError: 如果缺少必需的数据列
         """
-        ds = raw_data.data
-        if raw_data.is_tree:
-            ds = raw_data.data.dataset
-            if ds is None:
-                raise ValueError("DataTree has no root dataset for galvanostatic analysis.")
+        ds = self._bundle_dataset(bundle)
 
-        # 使用 traitlets 配置的列名
+        # 使用分析器配置的列名。
         time_key = self._pick(ds, self._get_column_candidates(self.time_columns))
         pot_key = self._pick(ds, self._get_column_candidates(self.potential_columns))
         cur_key = self._pick(ds, self._get_column_candidates(self.current_columns))
 
         if time_key is None:
-            raise ValueError(f"No time column found. Searched for: {self._get_column_candidates(self.time_columns)}")
+            raise ValueError(f"未找到时间列，已搜索: {self._get_column_candidates(self.time_columns)}")
         if pot_key is None:
-            raise ValueError(f"No potential/voltage column found. Searched for: {self._get_column_candidates(self.potential_columns)}")
+            raise ValueError(f"未找到电位/电压列，已搜索: {self._get_column_candidates(self.potential_columns)}")
         if cur_key is None:
-            raise ValueError(f"No current column found. Searched for: {self._get_column_candidates(self.current_columns)}")
+            raise ValueError(f"未找到电流列，已搜索: {self._get_column_candidates(self.current_columns)}")
 
         # 按时间排序 (如果时间列不是单调的)
         try:
-            time_vals = ds[time_key].values
-            if not (np.all(np.diff(time_vals) >= 0) or np.all(np.diff(time_vals) <= 0)):
+            time_vals = self._get_numeric_time(np.asarray(ds[time_key].values))
+            if time_vals.size > 1 and not (np.all(np.diff(time_vals) >= 0) or np.all(np.diff(time_vals) <= 0)):
                 ds = ds.sortby(time_key)
         except (TypeError, ValueError, KeyError):
             # 如果排序失败 (例如非可排序类型), 继续使用原始顺序
@@ -226,14 +188,14 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         dim = ds[cur_key].dims[0]
 
         # 使用公共方法提取数值型时间数组
-        t_numeric = self._get_numeric_time(ds[time_key].values)
+        t_numeric = self._get_numeric_time(np.asarray(ds[time_key].values))
 
         # 如果不存在 time_s 坐标, 则存储数值型时间
         if "time_s" not in ds.coords:
             ds = ds.assign_coords(time_s=(dim, t_numeric))
 
-        raw_data.data = ds
-        return raw_data
+        bundle.data = ds
+        return bundle
 
     @staticmethod
     def split_by_cycle(ds: xr.Dataset) -> dict[int, xr.Dataset]:
@@ -493,7 +455,7 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
             def norm_time_func(c, _cycle_num):
                 time_vals = self._get_numeric_time(c[time_key].values)
                 # 只为指定的循环计算归一化值，其他返回 NaN
-                if cycle_num in specified_cycles:
+                if _cycle_num in specified_cycles:
                     if t_max > t_min:
                         return norm_min + (time_vals - t_min) / (t_max - t_min) * (norm_max - norm_min)
                     else:
@@ -536,10 +498,12 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         if pot_key:
             result_vars["voltage_v"] = (["cycle_number", "record"], create_2d_array(lambda c: c[pot_key].values))
 
-        result_vars["current_ua"] = (["cycle_number", "record"], create_2d_array(lambda c: c[cur_key].values))
+        current_result_name = cur_key if cur_key in {"current_ma", "current_ua"} else "current"
+        result_vars[current_result_name] = (["cycle_number", "record"], create_2d_array(lambda c: c[cur_key].values))
 
         if capacity is not None:  # noqa: PLR1702
-            result_vars["capacity_uah"] = (
+            capacity_result_name = cap_key if cap_key in {"capacity_mah", "capacity_uah", "specific_capacity_mah_g"} else "capacity"
+            result_vars[capacity_result_name] = (
                 ["cycle_number", "record"],
                 create_2d_array(lambda c: c[cap_key].values if cap_key else np.array([])),
             )
@@ -568,7 +532,7 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
                             cap_vals = c[cap_key].values
                             if len(cap_vals) > 0:
                                 # 只为指定的循环计算归一化值，其他返回 NaN
-                                if cycle_num in specified_cycles:
+                                if _cycle_num in specified_cycles:
                                     if cap_max > cap_min:
                                         return norm_min + (cap_vals - cap_min) / (cap_max - cap_min) * (norm_max - norm_min)
                                     else:
@@ -624,7 +588,7 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
 
         return result_ds
 
-    def _compute(self, raw_data: RawData) -> tuple[AnalysisData, AnalysisDataInfo]:  # noqa: PLR0914
+    def _compute(self, bundle: DataBundle) -> AnalysisBundle:  # noqa: PLR0914
         """计算累计电荷(容量)、电位统计和库伦效率 (内部方法).
 
         此函数：
@@ -636,23 +600,17 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
             这是内部方法，用户应调用 analyze() 而不是直接调用此方法。
 
         Args:
-            raw_data: 原始数据容器
+            bundle: 原始数据包
 
         Returns:
-            (AnalysisData, AnalysisDataInfo) 元组:
-            - AnalysisData: 包含分析结果的数据集
-            - AnalysisDataInfo: 分析过程的参数和元数据
+            AnalysisBundle 分析结果包
         """
-        ds = raw_data.data
-        if isinstance(ds, xr.DataTree):
-            ds = ds.dataset
-            if ds is None:
-                raise ValueError("DataTree has no root dataset for galvanostatic analysis.")
+        ds = self._bundle_dataset(bundle)
 
         # 1. 提取和验证数据 - 查找时间、电位、电流、容量列
         time_key = self._pick(ds, self._get_column_candidates(self.time_columns)) or "time_s"
         pot_key = self._pick(ds, self._get_column_candidates(self.potential_columns))
-        cur_key = self._pick(ds, self._get_column_candidates(self.current_columns)) or next(iter(ds.data_vars))
+        cur_key = self._pick(ds, self._get_column_candidates(self.current_columns)) or str(next(iter(ds.data_vars)))
         cap_key = self._pick(ds, self._get_column_candidates(self.capacity_columns))
 
         # 记录使用的列名
@@ -664,11 +622,11 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
         }
 
         # 时间数组
-        time = ds.coords[time_key].values if time_key in ds.coords else ds[time_key].values
+        time = np.asarray(ds.coords[time_key].values if time_key in ds.coords else ds[time_key].values)
         current = ds[cur_key].values
         capacity = ds[cap_key].values if cap_key else None
 
-        dim = ds[cur_key].dims[0]
+        dim = str(ds[cur_key].dims[0])
 
         # 使用公共方法计算时间步长
         t_numeric = self._get_numeric_time(time)
@@ -736,18 +694,4 @@ class GalvanostaticAnalyzer(TechniqueAnalyzer):
             "used_columns": used_columns,
         }
 
-        # 构建 AnalysisData 和 AnalysisDataInfo
-        analysis_data = AnalysisData(data=result_ds)
-
-        # 创建 AnalysisDataInfo，只包含 parameters
-        # 以下字段会由基类的 analyze() 方法从 RawDataInfo 自动继承:
-        # - technique: 技术标识（从原始数据继承，如 ["echem", "gpcl"]）
-        # - sample_name: 样品名称
-        # - start_time: 测量起始时间
-        # - operator: 操作人员
-        # - instrument: 仪器标识
-        # - active_material_mass: 活性物质质量
-        # - wave_number: 波数（光谱相关）
-        analysis_info = AnalysisDataInfo(parameters=parameters)
-
-        return analysis_data, analysis_info
+        return AnalysisBundle(data=result_ds, meta=bundle.meta.copy(), parameters=parameters)

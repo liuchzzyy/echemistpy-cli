@@ -4,7 +4,7 @@
 
 ## 1. 结论
 
-`echemistpy-cli` 不应该只是在当前 `io + analysis` 原型上补一个 CLI 入口。当前库里已经有多仪器 reader、`RawData/RawDataInfo`、`xarray.Dataset/DataTree`、标准化映射、分析 registry/pipeline 雏形，这些方向值得保留；但它们的职责边界不够清楚，尤其是：
+`echemistpy-cli` 不应该只是在当前 `io + analysis` 原型上补一个 CLI 入口。当前库里已经有多仪器 reader、`Metadata/DataBundle/AnalysisBundle`、`xarray.Dataset/DataTree`、标准化映射、分析 registry/pipeline 雏形，这些方向值得保留；但它们的职责边界不够清楚，尤其是：
 
 - `io` 同时承担 reader、标准化、数据容器、保存导出、目录聚合，边界过宽。
 - `analysis` 同时包含科学算法和 XAS 绘图函数，结果数据与图形表达混在一起。
@@ -206,6 +206,7 @@ src/echemistpy/
     loaders.py
     plugin_manager.py
     summary.py
+    writer.py
     plugins/
       __init__.py
       echem_biologic_mpr.py
@@ -226,7 +227,9 @@ tests/
 
 - 已有 `[project.scripts] echemistpy = "echemistpy.cli.app:main"`，并已实现 `echem/xas/xrd/txm` 领域子命令下的 `formats`, `inspect`, `convert`，以及顶层 `doctor`。
 - `data` 层已经成为真实实现层：`models`, `schema`, `column_mappings`, `standardize`, `storage`, `utils` 都在 `data` 下。
+- 旧的 `RawData/RawDataInfo/AnalysisData/AnalysisDataInfo/ResultsData` 拆分接口已移除，不再提供兼容层；新代码只使用 `Metadata`, `DataBundle`, `AnalysisBundle`。
 - `io` 层不再保留 `structures`, `standardizer`, `saver`, `column_mappings`, `reader_utils` 兼容 re-export；旧路径应视为内部重构中删除。
+- `data.storage` 负责 bundle 的实际序列化；`io.writer` 是 I/O 层写出门面，只转发到 `data.storage`，不重复实现格式细节。
 - 当前依赖方向应保持为 `io -> data`、`analysis -> data`、`cli -> io/data`，不允许 `data -> io`。
 - `analysis.xas.plotting` 应迁到 `plot.xas`，避免分析模块承担绘图接口。
 - `analysis/echem`, `analysis/stxm`, `analysis/xas` 已有包导出，分析模块已改为从 `data.models` 消费数据容器。
@@ -234,7 +237,7 @@ tests/
 - reader 插件仍依赖插件目录扫描；能力声明已改为 `ReaderSpec`，后续可迁到 entry points。
 - 目录聚合逻辑放在 `BaseReader`，会让所有 reader 被迫承担目录组织职责。
 - 核心依赖包含 `xraylarch`, `umap-learn`, `numba`, `scikit-image` 等重型包，基础 CLI 用户不应默认安装。
-- `tests/` 已覆盖 CLI、reader spec、公开 data API 和电化学样例；完整测试可通过，但样例测试仍偏慢，且 traitlets 初始化有 deprecation warning。
+- `tests/` 已覆盖 CLI、reader spec、公开 data API 和电化学样例；完整测试可通过，但样例测试仍偏慢。
 
 ## 4. 目标架构
 
@@ -379,6 +382,13 @@ src/echemistpy/
 
 ```python
 @dataclass
+class Metadata:
+    technique: list[str]
+    sample_name: str
+    instrument: str | None
+    raw_metadata: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
 class DataBundle:
     data: xr.Dataset | xr.DataTree
     meta: Metadata
@@ -396,7 +406,7 @@ class AnalysisBundle:
     warnings: list[str] = field(default_factory=list)
 ```
 
-现有 `RawData`, `RawDataInfo`, `AnalysisData`, `AnalysisDataInfo` 可以先保留为兼容层，但新代码应逐步转向 `DataBundle/AnalysisBundle`。
+`RawData`, `RawDataInfo`, `AnalysisData`, `AnalysisDataInfo`, `ResultsData`, `ResultsDataInfo` 是旧接口，当前重构中已经删除。新接口不返回 `(data, info)` tuple，也不提供兼容 re-export；reader、loader、analysis、storage、CLI 均传递单个 bundle 对象。
 
 ### 5.2 xarray 规则
 
@@ -454,7 +464,7 @@ TXM/STXM:
   cluster_label
 ```
 
-旧变量名兼容策略：
+原始变量名标准化策略：
 
 - reader 可以先输出旧变量名。
 - `data.standardize` 统一转换到 schema 名。
@@ -493,17 +503,17 @@ provenance:
   raw_metadata
 ```
 
-`others` 可以保留为兼容字段，但新模型应使用 `raw_metadata`。
+新模型只使用 `raw_metadata` 保存仪器原始元数据和目录聚合信息，不再使用 `others` 兼容字段。
 
 ### 5.5 存储与索引
 
-`data.storage` 负责内部高效存储，不等同于 `io.writers`。
+`data.storage` 负责 bundle 的实际序列化，不等同于 `io.writer`。
 
 推荐规则：
 
 - 单个标准数据：NetCDF (`.nc`) 或 Zarr。
 - 大型层级/operando 数据：Zarr 或 HDF5/NetCDF group。
-- 表格导出：Parquet/CSV，由 `io.writers` 提供。
+- 表格导出：CSV 由 `data.storage` 实现，`io.writer` 提供面向 I/O 的 `write_bundle/write_data/write_info/write_combined` 门面。
 - 索引与检索：SQLite 或 DuckDB，只存 metadata、source hash、schema、路径、状态，不直接塞大型数组。
 - 缓存 key：`source_hash + reader_name + reader_version + schema_version + options_hash`。
 
@@ -838,7 +848,7 @@ save_data(result, "analysis.nc")
 
 ## 11. 依赖拆分
 
-当前依赖太重。建议：
+当前依赖按“默认只保留公共运行依赖，领域专属依赖进入 extras”的规则拆分：
 
 ```text
 base:
@@ -846,50 +856,49 @@ base:
   pandas
   xarray
   h5netcdf
-  openpyxl
-  traitlets 或 pydantic/dataclasses 二选一
-
-cli:
-  typer
-  rich
-
-storage:
-  zarr
-  pyarrow
-  duckdb
-
-plot:
-  matplotlib
-
-analysis:
   scipy
-  scikit-learn
-  lmfit
+  matplotlib
+  typer
+
+echem:
+  openpyxl
 
 xas:
+  scikit-learn
+  lmfit
   xraylarch
 
 txm:
+  h5py
   scikit-image
+  scikit-learn
   umap-learn
-  numba
+  lmfit
+
+xrd:
+  当前为空，后续有专属依赖再加入
 
 dev:
   ruff
+  ty
+  pre-commit
+
+test:
   pytest
   pytest-cov
-  pre-commit
-  ty
+  pytest-mock
+  pytest-benchmark
 ```
 
 安装示例：
 
 ```bash
-pip install echemistpy-cli[cli]
-pip install echemistpy-cli[cli,plot]
+pip install echemistpy-cli
+pip install echemistpy-cli[echem]
 pip install echemistpy-cli[xas]
 pip install echemistpy-cli[txm]
 pip install echemistpy-cli[all]
+pip install echemistpy-cli[dev]
 ```
 
 ## 12. 迁移路线
@@ -918,18 +927,21 @@ pip install echemistpy-cli[all]
 工作：
 
 - 新增 `echemistpy/data`。
-- 物理迁移 `io.structures` 到 `data.models`。
+- 在 `data.models` 中保留唯一数据接口：`Metadata`, `DataBundle`, `AnalysisBundle`。
+- 删除 `RawData/RawDataInfo/AnalysisData/AnalysisDataInfo/ResultsData` 等旧拆分对象，不做兼容层。
 - 物理迁移 `io.standardizer` 到 `data.standardize`。
 - 物理迁移 `io.column_mappings` 到 `data.column_mappings`，标准名仍由 `data.schema` 统一声明。
 - 物理迁移 `io.saver` 到 `data.storage`。
 - 物理迁移 `io.reader_utils` 中与 xarray 名称、metadata 合并、标准 attrs 相关的通用逻辑到 `data.utils`。
 - 新增标准名和单位表。
+- 新增 `io.writer`，作为写出门面调用 `data.storage`，避免 I/O 层重复实现保存逻辑。
 - 删除旧 `io.structures`, `io.standardizer`, `io.saver`, `io.column_mappings`, `io.reader_utils` 文件，不保留兼容 re-export。
 
 验收：
 
 - `src/echemistpy/data` 内没有任何 `echemistpy.io` import。
 - `io` reader 和 `analysis` analyzer 直接从 `data.models` 消费数据容器。
+- `io.load()` 返回 `DataBundle`，`analysis.analyze()` 返回 `AnalysisBundle`；不再有 `(RawData, RawDataInfo)` 形式返回值。
 - reader 输出可以通过 `data.validation.validate_schema()`。
 - analyzer required variables 与 schema 一致。
 
@@ -1010,7 +1022,8 @@ pip install echemistpy-cli[all]
 
 工作：
 
-- 新增 `data.storage` 和 `data.index`。
+- 完善 `data.storage` 并新增 `data.index`。
+- `io.writer` 只提供写出入口，不承担缓存、索引或格式实现。
 - 实现 cache key。
 - 支持 SQLite/DuckDB 索引。
 - 将稳定的 operando XAS 流程迁到 `workflows/operando_xas.py`。
@@ -1026,7 +1039,7 @@ pip install echemistpy-cli[all]
 第一批不要大改科学算法，目标是先把库变成“可导入、可检查、可验证”的 CLI 库基础。
 
 1. 新增并清理 `data` 包，物理迁移模型、标准化、列名映射、存储和通用工具，不保留 `io` 兼容层。
-2. 收紧 `io` 包，只保留 reader contracts、registry、load/inspect/convert 和插件，不从 `io.__init__` 暴露 data 容器或 storage。
+2. 收紧 `io` 包，只保留 reader contracts、registry、load/inspect/convert、writer 门面和插件，不从 `io.__init__` 暴露 data 容器或 storage。
 3. 新增 `data.schema`，统一变量名，先修 XAS/STXM `energy_ev/absorption/optical_density` 冲突。
 4. 补齐 `analysis` 子包导出并让 analyzer 直接依赖 `data.models`。
 5. 新增 `ReaderSpec`，先为现有 reader 声明 spec，不重写 reader 内部解析。
@@ -1037,11 +1050,11 @@ pip install echemistpy-cli[all]
 
 ## 14. 设计取舍
 
-- 是否保留 traitlets：如果未来重 notebook widget/GUI，保留 traitlets 有意义；如果重点是 CLI 和脚本，`dataclasses` 或 pydantic 更直接。第一阶段可以先兼容 traitlets，不在同一 PR 内替换。
+- 是否保留运行时配置框架：当前核心层不保留额外配置框架。CLI 和脚本优先使用 dataclass bundle 与普通 Python 类配置；如果未来需要交互式界面，再在 UI 层引入专门适配，不放回核心 data/io/analysis。
 - 是否直接采用 HyperSpy/RosettaSciIO：不建议。echemistpy 的范围横跨电化学、XAS、XRD、TXM，且已有 xarray 数据模型；直接依赖大型框架会增加迁移成本。应借鉴它们的边界和 registry 思路。
-- 是否把所有写出都放在 `io`：对外格式写出放 `io.writers`，内部缓存/索引/高效存储放 `data.storage`。这能避免 `io` 再次膨胀。
+- 是否把所有写出都放在 `io`：对外写出入口放 `io.writer`，内部缓存/索引/高效存储放 `data.storage`。这能避免 `io` 再次膨胀。
 - 是否一开始支持复杂数据库：不建议。先用文件存储 + SQLite/DuckDB metadata index，避免把数据库设计变成主任务。
-- 是否一开始暴露多个 CLI scripts：不建议。先用一个 `echem` 子命令入口，等 workflow 稳定再考虑单独脚本。
+- 是否一开始暴露多个 CLI scripts：不建议。先用一个 `echemistpy` 入口和 `echem/xas/xrd/txm` 子命令，等 workflow 稳定再考虑单独脚本。
 
 ## 15. 最终判断
 
