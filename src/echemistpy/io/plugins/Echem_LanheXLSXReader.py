@@ -51,6 +51,7 @@ class LanheXLSXReader(BaseReader):
         "Power/uW",
         "dQdV/uAh/V",
         "dVdQ/V/uAh",
+        "Temperature/C",
         "Temperature/℃",
         "Humidity/%",
         "Mark1",
@@ -61,6 +62,7 @@ class LanheXLSXReader(BaseReader):
         "ProcessName",
         "Thicknessmm",
         "ThicknessPressureg",
+        "ThicknessTempC",
         "ThicknessTemp℃",
         "ChannelNumber",
     ]
@@ -99,6 +101,9 @@ class LanheXLSXReader(BaseReader):
         "StepDuration": "StepDuration_s",
         "StepTime": "StepTime_s",
         "TestTime": "TestTime_s",
+        "Temperature/C": "Temperature_C",
+        "Temperature/℃": "Temperature_C",
+        "ThicknessTemp℃": "ThicknessTempC",
     }
     MASS_REGEX: ClassVar[re.Pattern[str]] = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(mg|g|ug|µg)", re.IGNORECASE)
     NUMERIC_REGEX: ClassVar[re.Pattern[str]] = re.compile(r"^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
