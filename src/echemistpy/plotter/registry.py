@@ -29,8 +29,9 @@ class BasePlotter(ABC):
         with plot_style():
             figure, ax = create_figure(figsize=figsize)
             metadata = self._render(ax, bundle, **options)
+            extra_axes = tuple(metadata.pop("_extra_axes", ()))
             figure.tight_layout()
-        return PlotResult(figure=figure, axes=(ax,), kind=self.spec.kind, metadata=metadata)
+        return PlotResult(figure=figure, axes=(ax, *extra_axes), kind=self.spec.kind, metadata=metadata)
 
     def validate(self, bundle: DataBundle | AnalysisBundle) -> None:
         """检查绘图所需变量是否存在。"""

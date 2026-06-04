@@ -84,7 +84,6 @@ where = ["src"]
 [tool.setuptools.package-data]
 "echemistpy" = ["*.pyi"]
 "echemistpy.data" = ["*.json", "*.yaml"]
-"echemistpy.plotter" = ["*.mplstyle"]
 
 [tool.ruff]
 line-length = 200

@@ -701,14 +701,14 @@ plot 不应该：
 
 ### 8.4 当前 echem plotter 约束
 
-- plotter 只画单图：每个 `PlotResult` 只包含一个主 `Axes`。
+- plotter 只画单图：每个 `PlotResult` 只对应一个 `Figure`；GCD 和循环效率等双 y 轴图可以包含一个主 `Axes` 和一个 twin `Axes`。
 - 默认 `figure size = (3.2, 2.5)`。
-- 默认使用 `src/echemistpy/plotter/liuchzzyy.mplstyle` 和 `src/echemistpy/plotter/colors.py` 中的 Paul Tol 色盲友好配色。
+- 默认使用 `src/echemistpy/plotter/style.py` 中的内置 Matplotlib rcParams 和 `src/echemistpy/plotter/colors.py` 中的 Paul Tol 色盲友好配色。
 - 第一批 echem 图类型：
   - `echem-cv`：电流-电位 CV 曲线。
-  - `echem-gcd`：容量-电压恒流充放电曲线。
+  - `echem-gcd`：容量-电压/电流恒流充放电曲线，默认首圈，可通过 `cycles=[...]` 指定圈数；有比容量或活性物质质量时使用 `mAh g^-1`，否则使用 `mAh`。
   - `echem-cycling`：循环充电/放电容量。
-  - `echem-efficiency`：库伦效率。
+  - `echem-efficiency`：库伦效率和充放电容量组合图，左 y 轴为库伦效率，右 y 轴为充放电容量或比容量。
   - `echem-nyquist`：Nyquist 阻抗图。
   - `echem-bode-magnitude`：Bode 阻抗模量图。
   - `echem-bode-phase`：Bode 相位图。
