@@ -12,16 +12,18 @@ import scipy.ndimage
 import scipy.optimize
 import umap
 import xarray as xr
-from echemistpy.processing.analyzers.registry import TechniqueAnalyzer
 from skimage.registration import phase_cross_correlation
 from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from traitlets import Bool, Dict, Float, Int, List, Unicode
 
+from echemistpy.analysis.registry import TechniqueAnalyzer
 from echemistpy.io.structures import AnalysisData, AnalysisDataInfo, RawData
 
 logger = logging.getLogger(__name__)
+
+ENERGY = "energy_ev"
 
 
 def b_value_model(x: np.ndarray, b: float, c: float) -> np.ndarray:
@@ -171,7 +173,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
     @property
     def required_columns(self) -> tuple[str, ...]:
-        return ("optical_density",)
+        return (ENERGY, "optical_density")
 
     @staticmethod
     def _get_spatial_dims(da: xr.DataArray) -> tuple[str, str]:
@@ -217,9 +219,9 @@ class STXMAnalyzer(TechniqueAnalyzer):
         ds = ds.copy(deep=True)
         da = ds["optical_density"]
 
-        # Ensure energy_eV is first dimension for iterating
-        if "energy_eV" in da.dims:
-            da_aligned = da.transpose("energy_eV", ...)
+        # Ensure energy_ev is first dimension for iterating
+        if ENERGY in da.dims:
+            da_aligned = da.transpose(ENERGY, ...)
         else:
             return ds
 
@@ -283,27 +285,27 @@ class STXMAnalyzer(TechniqueAnalyzer):
         # Work on a copy
         ds = ds.copy(deep=True)
 
-        if "energy_eV" not in ds.coords:
-            logger.warning("No 'energy_eV' coordinate found. Skipping interpolation.")
+        if ENERGY not in ds.coords:
+            logger.warning("No '%s' coordinate found. Skipping interpolation.", ENERGY)
             return ds
 
-        energy = ds.coords["energy_eV"].values
+        energy = ds.coords[ENERGY].values
         if len(energy) < 2:
             return ds
 
         # Handle duplicate energy values
-        if not ds.indexes["energy_eV"].is_unique:
+        if not ds.indexes[ENERGY].is_unique:
             logger.warning("Duplicate energy values found. Averaging duplicates.")
-            ds = ds.drop_duplicates("energy_eV")
-            energy = ds.coords["energy_eV"].values
+            ds = ds.drop_duplicates(ENERGY)
+            energy = ds.coords[ENERGY].values
 
         # Create uniform energy grid
         e_min, e_max = energy.min(), energy.max()
         new_energy = np.arange(e_min, e_max + self.energy_step, self.energy_step)
 
         # Interpolate
-        # xarray's interp handles all variables with energy_eV dim
-        cleaned_ds = ds.interp(energy_eV=new_energy, method="linear", kwargs={"fill_value": "extrapolate"})
+        # xarray's interp handles all variables with energy_ev dim
+        cleaned_ds = ds.interp({ENERGY: new_energy}, method="linear", kwargs={"fill_value": "extrapolate"})
 
         return cleaned_ds
 
@@ -335,8 +337,8 @@ class STXMAnalyzer(TechniqueAnalyzer):
             return ds, results
 
         da = ds["optical_density"]
-        if "energy_eV" in da.dims and da.dims[0] != "energy_eV":
-            da = da.transpose("energy_eV", ...)
+        if ENERGY in da.dims and da.dims[0] != ENERGY:
+            da = da.transpose(ENERGY, ...)
 
         original_shape = da.shape
         n_energy = original_shape[0]
@@ -395,13 +397,13 @@ class STXMAnalyzer(TechniqueAnalyzer):
         # Use denoised if available, else original
         work_da = ds["denoised"] if "denoised" in ds else ds["optical_density"]
 
-        e_coords = work_da.coords["energy_eV"].values
+        e_coords = work_da.coords[ENERGY].values
         mask_pre = (e_coords >= self.pre_edge_range[0]) & (e_coords <= self.pre_edge_range[1])
 
         if mask_pre.any():
             try:
                 x_pre = e_coords[mask_pre]
-                y_pre = work_da.isel(energy_eV=mask_pre).values.reshape(len(x_pre), -1)
+                y_pre = work_da.isel({ENERGY: mask_pre}).values.reshape(len(x_pre), -1)
 
                 # Linear regression: y = mx + c
                 x_mat = np.vstack([x_pre, np.ones(len(x_pre))]).T
@@ -430,7 +432,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
         work_da = ds["background_removed"] if "background_removed" in ds else (ds["denoised"] if "denoised" in ds else ds["optical_density"])
 
         # Calculate sum image to find thin/thick regions
-        intensity_map = work_da.sum(dim="energy_eV")
+        intensity_map = work_da.sum(dim=ENERGY)
         flat_int = intensity_map.values.flatten()
         flat_int = flat_int[~np.isnan(flat_int)]
 
@@ -482,9 +484,9 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
         for name, (start, end) in rois_to_process.items():
             s, e = sorted([start, end])
-            mask_roi = (work_da.energy_eV >= s) & (work_da.energy_eV <= e)
+            mask_roi = (work_da[ENERGY] >= s) & (work_da[ENERGY] <= e)
             if mask_roi.any():
-                roi_map = work_da.sel(energy_eV=slice(s, e)).mean(dim="energy_eV")
+                roi_map = work_da.sel({ENERGY: slice(s, e)}).mean(dim=ENERGY)
                 ds[name] = roi_map
 
         # 2. Spatial ROIs -> Spectra
@@ -510,8 +512,8 @@ class STXMAnalyzer(TechniqueAnalyzer):
         results = {}
         work_da = ds.get("thickness_corrected", ds.get("background_removed", ds.get("denoised", ds.get("optical_density"))))
 
-        if "energy_eV" in work_da.dims and work_da.dims[0] != "energy_eV":
-            work_da = work_da.transpose("energy_eV", ...)
+        if ENERGY in work_da.dims and work_da.dims[0] != ENERGY:
+            work_da = work_da.transpose(ENERGY, ...)
 
         original_shape = work_da.shape
         n_energy = original_shape[0]
@@ -573,7 +575,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
                     labels_valid = model.fit_predict(data_for_clustering)
                     centroids = model.means_
 
-                if method == "dbscan":
+                elif method == "dbscan":
                     model = DBSCAN(**kwargs)
                     labels_valid = model.fit_predict(data_for_clustering)
                     unique_labels = set(labels_valid)
@@ -616,7 +618,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
             return ds, results
 
         work_da = ds.get("thickness_corrected", ds.get("background_removed", ds.get("denoised", ds.get("optical_density"))))
-        energy_coords = work_da.coords["energy_eV"].values
+        energy_coords = work_da.coords[ENERGY].values
 
         for model_name, config in self.fitting_models.items():
             targets = config.get("targets", [])
@@ -641,7 +643,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
             for target in targets:
                 if target.startswith("spectrum_") and target in ds:
                     da_spec = ds[target]
-                    spectra_to_fit[target] = (da_spec.coords["energy_eV"].values, da_spec.values)
+                    spectra_to_fit[target] = (da_spec.coords[ENERGY].values, da_spec.values)
 
             # Perform Fitting
             model_fits = {}
@@ -673,7 +675,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
 
                     # Evaluate on full range
                     y_full_calc = composite.eval(result.params, x=x)
-                    da_fit = xr.DataArray(y_full_calc, coords={"energy_eV": x}, dims="energy_eV", name=f"fit_{model_name}_{spec_name}")
+                    da_fit = xr.DataArray(y_full_calc, coords={ENERGY: x}, dims=ENERGY, name=f"fit_{model_name}_{spec_name}")
                     ds[f"fit_{model_name}_{spec_name}"] = da_fit
 
                 except Exception as e:
@@ -704,7 +706,7 @@ class STXMAnalyzer(TechniqueAnalyzer):
         work_da = ds.get("thickness_corrected", ds.get("background_removed", ds.get("denoised", ds.get("optical_density"))))
 
         # Align references to data energy
-        energy = work_da.coords["energy_eV"].values
+        energy = work_da.coords[ENERGY].values
 
         # Build design matrix A (n_energy, n_components)
         component_names = sorted(references.keys())
@@ -726,8 +728,8 @@ class STXMAnalyzer(TechniqueAnalyzer):
         design_matrix = np.column_stack(design_matrix_list)  # (n_energy, n_components)
 
         # Prepare data B (n_energy, n_pixels)
-        if "energy_eV" in work_da.dims and work_da.dims[0] != "energy_eV":
-            work_da = work_da.transpose("energy_eV", ...)
+        if ENERGY in work_da.dims and work_da.dims[0] != ENERGY:
+            work_da = work_da.transpose(ENERGY, ...)
 
         original_shape = work_da.shape
         n_energy = original_shape[0]
@@ -817,6 +819,8 @@ class STXMAnalyzer(TechniqueAnalyzer):
             results.update(map_info)
 
         analysis_data = AnalysisData(data=ds)
-        analysis_info = AnalysisDataInfo(parameters=params_dict, others=results)
+        if results:
+            params_dict["step_results"] = results
+        analysis_info = AnalysisDataInfo(parameters=params_dict)
 
         return analysis_data, analysis_info

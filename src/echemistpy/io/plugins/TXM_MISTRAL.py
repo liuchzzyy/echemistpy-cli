@@ -15,6 +15,7 @@ import numpy as np
 import xarray as xr
 
 from echemistpy.io.base_reader import BaseReader
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import apply_standard_attrs_txm
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -32,6 +33,14 @@ class MISTRALReader(BaseReader):
     # --- Loader Metadata ---
     supports_directories: ClassVar[bool] = False
     instrument: ClassVar[str] = "mistral"
+    spec: ClassVar[ReaderSpec] = ReaderSpec(
+        name="mistral_hdf5",
+        extensions=(".hdf5",),
+        instruments=("mistral",),
+        techniques=("txm",),
+        supports_directory=False,
+        description="ALBA MISTRAL TXM HDF5 files",
+    )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the MISTRAL reader.

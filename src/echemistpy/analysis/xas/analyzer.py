@@ -130,7 +130,7 @@ class XASAnalyzer(TechniqueAnalyzer):
 
     @property
     def required_columns(self) -> tuple[str, ...]:
-        return ("energyc", "absorption")
+        return ("energy_ev", "absorption")
 
     def _process_single_spectrum(self, energy: np.ndarray, mu: np.ndarray) -> dict[str, Any]:
         """Helper to process a single 1D spectrum."""
@@ -198,12 +198,12 @@ class XASAnalyzer(TechniqueAnalyzer):
             if not ds.data_vars:
                 raise ValueError("DataTree root has no data variables.")
 
-        if "energyc" not in ds.coords and "energyc" not in ds.data_vars:
-            raise ValueError("Dataset missing 'energyc'.")
+        if "energy_ev" not in ds.coords and "energy_ev" not in ds.data_vars:
+            raise ValueError("Dataset missing 'energy_ev'.")
         if "absorption" not in ds.data_vars:
             raise ValueError("Dataset missing 'absorption'.")
 
-        energy = ds.coords["energyc"].values if "energyc" in ds.coords else ds["energyc"].values
+        energy = ds.coords["energy_ev"].values if "energy_ev" in ds.coords else ds["energy_ev"].values
 
         # Determine if multiple records
         has_record = "record" in ds.dims
@@ -215,7 +215,7 @@ class XASAnalyzer(TechniqueAnalyzer):
             res = self._process_single_spectrum(energy, mu)
 
             if "norm_absorption" in res:
-                results_ds["norm_absorption"] = (ds.coords["energyc"].dims, res["norm_absorption"])
+                results_ds["norm_absorption"] = (ds.coords["energy_ev"].dims, res["norm_absorption"])
                 results_ds["e0"] = res["e0"]
                 results_ds["edge_step"] = res["edge_step"]
             if "chi_k" in res:
@@ -262,7 +262,7 @@ class XASAnalyzer(TechniqueAnalyzer):
 
             # Stack results
             if norm_list:
-                results_ds["norm_absorption"] = (("record", "energyc"), np.array(norm_list))
+                results_ds["norm_absorption"] = (("record", "energy_ev"), np.array(norm_list))
 
             results_ds["e0"] = (("record"), np.array(e0_list))
             results_ds["edge_step"] = (("record"), np.array(edge_step_list))

@@ -25,8 +25,9 @@ import importlib
 import pkgutil
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.plugin_manager import get_plugin_manager
 from echemistpy.io.standardizer import (
     standardize_names,
@@ -40,7 +41,32 @@ if TYPE_CHECKING:
     pass
 
 
-def load(  # noqa: PLR0912
+def _normalize_extension(extension: str) -> str:
+    ext = extension.lower().strip()
+    return ext if ext.startswith(".") else f".{ext}"
+
+
+def _instrument_extensions(instrument: str) -> list[str]:
+    pm = get_plugin_manager()
+    target = instrument.lower().strip()
+    extensions = []
+    for ext in pm.list_supported_extensions():
+        instruments = [name.lower().strip() for name in pm.get_loader_instruments(ext)]
+        if target in instruments:
+            extensions.append(ext)
+    return sorted(extensions)
+
+
+def _directory_extension(path: Path, instrument: str) -> str:
+    matches = [ext for ext in _instrument_extensions(instrument) if any(path.rglob(f"*{ext}"))]
+    if not matches:
+        raise ValueError(f"Could not determine loader for directory: {path}. Please specify 'instrument' or 'fmt'.")
+    if len(matches) > 1:
+        raise ValueError(f"Multiple formats found for directory '{path}' and instrument '{instrument}': {matches}. Please specify 'fmt'.")
+    return matches[0]
+
+
+def load(
     path: str | Path,
     fmt: Optional[str] = None,
     technique: Optional[str | list[str]] = None,
@@ -87,7 +113,7 @@ def load(  # noqa: PLR0912
         overrides["technique"] = [technique] if isinstance(technique, str) else technique
 
     path = Path(path) if isinstance(path, str) else path
-    ext = fmt if fmt else path.suffix.lower()
+    ext = _normalize_extension(fmt) if fmt else path.suffix.lower()
 
     pm = get_plugin_manager()
 
@@ -97,13 +123,7 @@ def load(  # noqa: PLR0912
 
     # If it's a directory and no extension is provided, we need to find a loader by instrument
     if path.is_dir() and not ext and instrument:
-        # 精确匹配 instrument 名称，避免子串匹配错误
-        instrument_normalized = instrument.lower().strip()
-        for supported_ext in pm.list_supported_extensions():
-            available_instruments = [inst.lower().strip() for inst in pm.get_loader_instruments(supported_ext)]
-            if instrument_normalized in available_instruments:
-                ext = supported_ext
-                break
+        ext = _directory_extension(path, instrument)
 
     # Check available instruments for this extension
     available_instruments = pm.get_loader_instruments(ext)
@@ -164,21 +184,23 @@ def _register_loader(extensions: list[str], loader_class: Any) -> None:
 # ============================================================================
 
 
-def list_supported_formats() -> Dict[str, str]:
+def list_supported_formats() -> dict[str, str]:
     """Return a dictionary of supported file formats and their descriptions."""
     pm = get_plugin_manager()
-    loaders = pm.get_supported_loaders()
+    formats: dict[str, str] = {}
+    for spec in pm.list_reader_specs():
+        detail = f"{spec.name}; instruments={','.join(spec.instruments)}; techniques={','.join(spec.techniques)}"
+        for ext in spec.extensions:
+            formats.setdefault(ext, detail)
+            if formats[ext] != detail:
+                formats[ext] = f"{formats[ext]} | {detail}"
+    return dict(sorted(formats.items()))
 
-    formats = {}
-    for ext, plugin_names in loaders.items():
-        # Clean extension string for display
-        ext_display = ext.lower()
 
-        # Build description
-        plugins_str = ", ".join(plugin_names)
-        formats[ext_display] = f"Loaded by: {plugins_str}"
-
-    return formats
+def list_reader_specs() -> tuple[ReaderSpec, ...]:
+    """Return declared reader capabilities."""
+    pm = get_plugin_manager()
+    return tuple(pm.list_reader_specs())
 
 
 # ============================================================================
@@ -186,7 +208,31 @@ def list_supported_formats() -> Dict[str, str]:
 # ============================================================================
 
 
-def _initialize_default_plugins() -> None:  # noqa: PLR0912
+def _reader_spec(reader_class: type[Any]) -> ReaderSpec | None:
+    """Return the declared reader spec, if present."""
+    spec = getattr(reader_class, "spec", None)
+    if isinstance(spec, ReaderSpec):
+        return spec
+    return None
+
+
+def _register_reader_classes(module: Any) -> None:
+    """Register reader classes declared by one plugin module."""
+    from echemistpy.io.base_reader import BaseReader  # noqa: PLC0415
+
+    pm = get_plugin_manager()
+    for attr_name in dir(module):
+        attr = getattr(module, attr_name)
+        if not (isinstance(attr, type) and issubclass(attr, BaseReader) and attr is not BaseReader):
+            continue
+        spec = _reader_spec(attr)
+        if spec is None:
+            warnings.warn(f"Reader {attr.__module__}.{attr.__name__} has no ReaderSpec and was not registered.", stacklevel=2)
+            continue
+        pm.register_loader(list(spec.extensions), attr)
+
+
+def _initialize_default_plugins() -> None:
     """Initialize and register default loader and saver plugins by scanning plugins directory."""
     pm = get_plugin_manager()
     if pm.initialized:
@@ -199,70 +245,14 @@ def _initialize_default_plugins() -> None:  # noqa: PLR0912
     if not plugins_path:
         return
 
-    for _, name, _ in pkgutil.iter_modules([plugins_path]):  # noqa: PLR1702
+    for _, name, _ in pkgutil.iter_modules([plugins_path]):
         if name.startswith("_"):
             continue
 
         try:
-            # Import the module
             full_name = f"echemistpy.io.plugins.{name}"
             module = importlib.import_module(full_name)
-
-            # Look for reader classes
-            # Reader classes usually register themselves upon import if they have the registration logic
-            # If not, we can inspect and register them here (assuming they have specific attributes)
-
-            # Current implementation assumes plugins are imported and registered manually in the old code.
-            # However, looking at the plugin files, they seem to just define classes inheriting from BaseReader.
-            # They don't seem to self-register.
-            # So we need to inspect the module and find BaseReader subclasses.
-
-            from echemistpy.io.base_reader import BaseReader  # noqa: PLC0415
-
-            for attr_name in dir(module):
-                attr = getattr(module, attr_name)
-                if isinstance(attr, type) and issubclass(attr, BaseReader) and attr is not BaseReader:
-                    # Found a reader class!
-                    # Now we need to know which extensions it supports.
-                    # We can use the _get_file_extension method or try to inspect metadata
-                    # Since _get_file_extension is an instance method in BaseReader, this is tricky without instantiation.
-                    # But wait, BaseReader defines _get_file_extension.
-
-                    # Strategy: Use a temporary instance or inspect class attributes if available.
-                    # The old code registered specific classes to specific extensions.
-                    # Let's try to infer from class variables or method if static.
-
-                    # For now, let's replicate the mapping logic based on class names or known patterns
-                    # OR update BaseReader/Plugins to have a 'SUPPORTED_EXTENSIONS' class var.
-                    # The current BiologicMPTReader has _get_file_extension as a staticmethod returning '.mpt'.
-
-                    extensions = []
-                    if hasattr(attr, "_get_file_extension"):
-                        # Check if it's a static method or class method we can call without instance
-                        try:
-                            ext = attr._get_file_extension()  # type: ignore
-                            if isinstance(ext, str):
-                                extensions.append(ext)
-                        except (TypeError, AttributeError):
-                            # Instance method, can't call
-                            pass
-
-                    # Fallback mapping based on class names (to match previous logic)
-                    if not extensions:
-                        name_lower = attr.__name__.lower()
-                        if "biologic" in name_lower:
-                            extensions = [".mpt"]
-                        elif "lanhe" in name_lower:
-                            extensions = [".xlsx"]
-                        elif "mspd" in name_lower:
-                            extensions = [".xye"]
-                        elif "claess" in name_lower:
-                            extensions = [".dat"]
-                        elif "mistral" in name_lower:
-                            extensions = [".hdf5"]
-
-                    if extensions:
-                        pm.register_loader(extensions, attr)
+            _register_reader_classes(module)
 
         except ImportError as e:
             warnings.warn(f"Failed to load plugin {name}: {e}", stacklevel=2)
@@ -277,6 +267,7 @@ _initialize_default_plugins()
 
 
 __all__ = [
+    "list_reader_specs",
     "list_supported_formats",
     "load",
 ]

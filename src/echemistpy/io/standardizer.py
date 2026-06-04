@@ -96,7 +96,8 @@ class DataStandardizer(HasTraits):
             **kwargs,
         )
 
-    def _get_mappings_for_technique(self, tech: str) -> dict[str, str]:
+    @staticmethod
+    def _get_mappings_for_technique(tech: str) -> dict[str, str]:
         """获取指定技术的列名映射。
 
         Args:
@@ -174,18 +175,22 @@ class DataStandardizer(HasTraits):
         rename_dict = {}
         # 检查数据变量和坐标
         all_names = list(self.dataset.data_vars) + list(self.dataset.coords)
+        planned_names = set(all_names)
         for name in all_names:
             old_name = str(name)
             if old_name in mapping:
                 new_name = mapping[old_name]
                 if new_name != old_name:
                     # 避免冲突
-                    if new_name in self.dataset:
+                    if new_name in self.dataset or new_name in rename_dict.values() or new_name in planned_names:
                         # 如果目标名称已存在且数据相同，删除旧变量
                         if old_name in self.dataset:
                             self.dataset = self.dataset.drop_vars(old_name)
+                        planned_names.discard(old_name)
                         continue
                     rename_dict[old_name] = new_name
+                    planned_names.discard(old_name)
+                    planned_names.add(new_name)
 
         if rename_dict:
             self.dataset = self.dataset.rename(rename_dict)
@@ -210,7 +215,7 @@ class DataStandardizer(HasTraits):
             self.dataset = self.dataset[existing_vars + other_vars]  # type: ignore
             break  # 只应用第一个技术的顺序
 
-    def standardize_units(self) -> "DataStandardizer":  # noqa: PLR0912
+    def standardize_units(self) -> "DataStandardizer":
         """Convert units to standard echemistpy conventions."""
         renames = {}
         conversions = {}
@@ -224,16 +229,10 @@ class DataStandardizer(HasTraits):
 
         for name in list(self.dataset.data_vars.keys()) + list(self.dataset.coords.keys()):
             var_name = str(name)
-            var_data = self.dataset[var_name]
             var_lower = var_name.lower()
 
-            # Handle time conversions
-            if var_name == "time_s":
-                # Convert float seconds to timedelta64[ns]
-                if var_data.dtype != "timedelta64[ns]":
-                    conversions[var_name] = lambda x: (x * 1e9).astype("timedelta64[ns]")
-
-            elif "time" in var_lower or var_name == "t":
+            # Handle time conversions. Keep canonical time_s as numeric seconds.
+            if var_name != "time_s" and ("time" in var_lower or var_name == "t"):
                 if "min" in var_lower and "mah" not in var_lower:
                     conversions[var_name] = lambda x: x * 60
                     renames[var_name] = var_name.replace("min", "s")
@@ -245,10 +244,10 @@ class DataStandardizer(HasTraits):
             elif "current" in var_lower or var_name.startswith("I"):
                 if "/a" in var_lower or "_a" in var_lower:
                     conversions[var_name] = lambda x: x * 1000
-                    renames[var_name] = replace_suffixes(var_name, {"/A": "/mA", "_A": "_mA", "/a": "/mA", "_a": "_mA"})
+                    renames[var_name] = replace_suffixes(var_name, {"/A": "/ma", "_A": "_ma", "/a": "/ma", "_a": "_ma"})
                 elif "/μa" in var_lower or "/ua" in var_lower:
                     conversions[var_name] = lambda x: x / 1000
-                    renames[var_name] = replace_suffixes(var_name, {"/μA": "/mA", "/uA": "/mA", "/μa": "/mA", "/ua": "/mA"})
+                    renames[var_name] = replace_suffixes(var_name, {"/μA": "/ma", "/uA": "/ma", "/μa": "/ma", "/ua": "/ma"})
 
             # Handle voltage conversions
             elif ("voltage" in var_lower or "potential" in var_lower or var_name.startswith("E")) and "/mv" in var_lower:

@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 from traitlets import Bool, Dict, HasTraits
 
+from echemistpy.io.contracts import ReaderSpec
+
 
 class IOPluginManager(HasTraits):
     """IO 插件管理器，使用 traitlets 管理插件注册。
@@ -98,17 +100,10 @@ class IOPluginManager(HasTraits):
         self.savers = current_savers
 
     @staticmethod
-    def _get_instrument_name(loader_cls: Any) -> str:
-        """Helper to safely extract instrument name from a loader class."""
-        loader_inst = getattr(loader_cls, "instrument", None)
-        if loader_inst is None:
-            return ""
-
-        # Check if it's a traitlet (has default_value)
-        if hasattr(loader_inst, "default_value"):
-            return str(loader_inst.default_value)  # type: ignore
-
-        return str(loader_inst)
+    def _reader_spec(loader_cls: Any) -> ReaderSpec | None:
+        """Return the declared reader spec for a loader class."""
+        spec = getattr(loader_cls, "spec", None)
+        return spec if isinstance(spec, ReaderSpec) else None
 
     def get_loader(self, extension: str, instrument: Optional[str] = None) -> Optional[Any]:
         """获取指定扩展名的加载器，可选择按仪器过滤。
@@ -134,13 +129,8 @@ class IOPluginManager(HasTraits):
             inst_lower = instrument.lower()
             # 尝试找到匹配仪器名称的加载器
             for loader in loaders:
-                inst_name = self._get_instrument_name(loader)
-
-                if inst_name and inst_name.lower() == inst_lower:
-                    return loader
-
-                # 作为后备，检查类名是否包含仪器名称
-                if inst_lower in loader.__name__.lower():
+                spec = self._reader_spec(loader)
+                if isinstance(spec, ReaderSpec) and inst_lower in {name.lower() for name in spec.instruments}:
                     return loader
 
             # 如果指定了仪器但未找到匹配，返回 None
@@ -192,12 +182,24 @@ class IOPluginManager(HasTraits):
         loaders = self.loaders.get(ext, [])
         instruments = []
         for loader in loaders:
-            inst_name = self._get_instrument_name(loader)
-            if inst_name:
-                instruments.append(inst_name)
-            else:
-                instruments.append(loader.__name__)
+            spec = self._reader_spec(loader)
+            if isinstance(spec, ReaderSpec):
+                instruments.extend(spec.instruments)
         return instruments
+
+    def list_reader_specs(self) -> list[ReaderSpec]:
+        """Return declared specs for all registered readers."""
+        specs: list[ReaderSpec] = []
+        seen: set[type] = set()
+        for loaders in self.loaders.values():
+            for loader in loaders:
+                if loader in seen:
+                    continue
+                seen.add(loader)
+                spec = self._reader_spec(loader)
+                if isinstance(spec, ReaderSpec):
+                    specs.append(spec)
+        return sorted(specs, key=lambda spec: spec.name)
 
 
 def get_plugin_manager() -> IOPluginManager:

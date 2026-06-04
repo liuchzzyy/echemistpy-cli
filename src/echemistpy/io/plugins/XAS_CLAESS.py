@@ -18,6 +18,7 @@ import xarray as xr
 from scipy.interpolate import interp1d
 
 from echemistpy.io.base_reader import BaseReader
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import apply_standard_attrs_xas
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -48,6 +49,14 @@ class CLAESSReader(BaseReader):
     # --- Loader Metadata ---
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "alba_claess"
+    spec: ClassVar[ReaderSpec] = ReaderSpec(
+        name="claess_dat",
+        extensions=(".dat",),
+        instruments=("alba_claess",),
+        techniques=("xas", "in_situ"),
+        supports_directory=True,
+        description="ALBA CLAESS XAS DAT files",
+    )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the CLAESS reader.

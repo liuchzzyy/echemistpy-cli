@@ -15,6 +15,7 @@ import pandas as pd
 import xarray as xr
 
 from echemistpy.io.base_reader import BaseReader
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import apply_standard_attrs_xrd, merge_infos
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -37,6 +38,14 @@ class MSPDReader(BaseReader):
     # --- Loader Metadata ---
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "alba_mspd"
+    spec: ClassVar[ReaderSpec] = ReaderSpec(
+        name="mspd_xye",
+        extensions=(".xye",),
+        instruments=("alba_mspd",),
+        techniques=("xrd",),
+        supports_directory=True,
+        description="ALBA MSPD XRD XYE files",
+    )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the MSPD reader.

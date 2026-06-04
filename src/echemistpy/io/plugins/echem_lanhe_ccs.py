@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ruff: noqa: N999, N806, N815, PLR0912, PLR0914, PLR0915, PLR6301, RUF046
+# ruff: noqa: N806, N815, PLR0912, PLR0914, PLR0915, PLR6301, RUF046
 """CCS binary reader for LANHE/LAND battery test files."""
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import pandas as pd
 import xarray as xr
 
 from echemistpy.io.base_reader import BaseReader
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import sanitize_variable_names
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -39,6 +40,14 @@ class LanheCCSReader(BaseReader):
 
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "lanhe"
+    spec: ClassVar[ReaderSpec] = ReaderSpec(
+        name="lanhe_ccs",
+        extensions=(".ccs",),
+        instruments=("lanhe",),
+        techniques=("echem", "gcd"),
+        supports_directory=True,
+        description="LANHE/LAND CCS binary files",
+    )
 
     MASS_REGEX: ClassVar[re.Pattern[str]] = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(mg|g|ug|µg)", re.IGNORECASE)
     DURATION_SECOND_COLUMNS: ClassVar[dict[str, str]] = {
@@ -221,11 +230,6 @@ class LanheCCSReader(BaseReader):
         if mass_g is None:
             return None
         return f"{mass_g * 1000:g} mg"
-
-    @staticmethod
-    def _get_file_extension() -> str:
-        """Get the file extension for this reader."""
-        return ".ccs"
 
 
 @dataclass(frozen=True)

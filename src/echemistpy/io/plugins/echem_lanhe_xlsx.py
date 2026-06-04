@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ruff: noqa: N999
 """XLSX Data Reader for LANHE battery test files with metadata extraction using traitlets."""
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import pandas as pd
 import xarray as xr
 
 from echemistpy.io.base_reader import BaseReader
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import merge_infos, sanitize_variable_names
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -111,6 +111,14 @@ class LanheXLSXReader(BaseReader):
     # --- Loader Metadata ---
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "lanhe"
+    spec: ClassVar[ReaderSpec] = ReaderSpec(
+        name="lanhe_xlsx",
+        extensions=(".xlsx",),
+        instruments=("lanhe",),
+        techniques=("echem", "gcd"),
+        supports_directory=True,
+        description="LANHE exported XLSX files",
+    )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the LANHE reader.
@@ -824,12 +832,3 @@ class LanheXLSXReader(BaseReader):
             except (TypeError, ValueError, ZeroDivisionError):
                 result.append(None)
         return result
-
-    @staticmethod
-    def _get_file_extension() -> str:
-        """Get the file extension for this reader.
-
-        Returns:
-            File extension including the dot
-        """
-        return ".xlsx"

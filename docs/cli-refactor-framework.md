@@ -1,42 +1,174 @@
-# echemistpy-cli CLI 重构设计框架
+# echemistpy-cli CLI 库重构设计框架
 
-日期：2026-06-02
+日期：2026-06-04
 
 ## 1. 结论
 
-`echemistpy-cli` 当前更接近一个“可导入的科学数据处理原型库”，而不是一个成熟 CLI 库。它已经有有价值的基础能力：多格式 reader、`RawData/RawDataInfo` 容器、`xarray.Dataset/DataTree` 数据承载、标准化映射、分析 pipeline/registry 雏形。但当前不适合直接作为 CLI 发布，原因是：
+`echemistpy-cli` 不应该只是在当前 `io + analysis` 原型上补一个 CLI 入口。当前库里已经有多仪器 reader、`RawData/RawDataInfo`、`xarray.Dataset/DataTree`、标准化映射、分析 registry/pipeline 雏形，这些方向值得保留；但它们的职责边界不够清楚，尤其是：
 
-- 没有 CLI 入口：`pyproject.toml` 未配置 `[project.scripts]`，源码中也没有 `cli.py`、`__main__.py`、Typer/Click/argparse 命令层。
-- 分析层当前不可完整运行：`AnalysisPipeline()` 实例化失败，`create_default_registry()` 从子包根导入 analyzer，但子包没有 `__init__.py` 导出；`echem/analyzer.py` 也使用了错误的相对导入。
-- 数据契约不一致：I/O 标准化会把 XAS 变量改成 `energy_eV/absorption_au`，但 XAS analyzer 要求 `energyc/absorption`。
-- 插件系统可用但脆弱：默认插件能被扫描注册，但注册依赖 import side effect、类名推断和 `_get_file_extension()`，缺少显式插件 manifest/协议。
-- reader 类职责过大：解析、清洗、标准化、元数据提取、目录聚合、DataTree 构造、仪器特殊逻辑混在一起，难以测试和组合成 CLI 工作流。
-- 依赖过重：核心包依赖 `xraylarch`、`umap-learn`、`numba`、`scikit-image` 等重型分析库；CLI 用户只做 `load/list/export` 时不应安装所有分析依赖。
-- 测试不可用：`pyproject.toml` 定义了 pytest，但当前 `.venv` 没有 `pytest`；仓库没有 `tests/`。
+- `io` 同时承担 reader、标准化、数据容器、保存导出、目录聚合，边界过宽。
+- `analysis` 同时包含科学算法和 XAS 绘图函数，结果数据与图形表达混在一起。
+- 目前没有独立 `data` 层承载“标准数据契约、xarray 接口、存储、转换、分发、索引/数据库”。
+- 目前没有独立 `plot` 层承载“从标准数据/分析结果生成图”的公共接口。
+- CLI 层尚不存在，不能直接验证“可安装、可调用、可扩展”的产品形态。
 
-因此建议做“大重构”，但不是直接改代码。应先以本文档为蓝图，按阶段把项目改成“核心库 + CLI 外壳 + 插件扩展点”的结构。
+因此推荐的目标不是“把所有功能塞进一个 CLI”，而是做成一个 **CLI-first scientific library**：
 
-## 2. 当前代码盘点
+```text
+CLI 是薄壳
+Python API 是稳定核心
+io 只负责外部格式适配
+data 负责统一数据模型、schema、转换、存储和 xarray/数据库接口
+analysis 负责科学计算
+plot 负责可视化
+workflow 负责编排多步任务
+```
 
-### 2.1 项目元数据
+这比当前文档中偏 `core/io/analysis` 的方案更贴近项目长期目标，也更符合同类成熟科学库的结构。
 
-- 包发行名：`echemistpy-cli`
-- Python 导入名：`echemistpy`
-- 当前版本：`0.1.0`
-- 构建后端：`setuptools`
-- 源码布局：`src/echemistpy`
-- 当前没有 `[project.scripts]`
-- 当前没有 CLI 命令模块
-- 当前没有测试目录
+## 2. GitHub 参考项目
 
-`pyproject.toml` 中 `dev` extra 引用了 `echemistpy-cli[interactive]` 和 `echemistpy-cli[docs]`，但这两个 optional extras 未定义，应在重构时修正。
+这次设计参考了几个真实项目的仓库结构，而不是只从当前代码出发。
 
-### 2.2 当前模块
+### 2.1 ixdat
+
+仓库：https://github.com/ixdat/ixdat
+
+相关结构：
+
+- `src/ixdat/readers`
+- `src/ixdat/exporters`
+- `src/ixdat/plotters`
+- `src/ixdat/techniques`
+- `src/ixdat/calculators`
+- `src/ixdat/backends`
+- `src/ixdat/data_series.py`
+- `src/ixdat/measurement_base.py`
+- `src/ixdat/db.py`
+
+可借鉴点：
+
+- 原位实验数据需要一个稳定的“measurement/data object”作为核心，而不是让 reader/analyzer 直接传散乱对象。
+- reader、exporter、plotter、technique/calculator 分开，有助于避免 I/O、算法、绘图互相依赖。
+- 数据库/backend 是一等模块，适合管理实验数据的持久化与检索。
+
+对 echemistpy 的启发：
+
+- `data` 层应该成为项目中心，不应继续放在 `io.structures`。
+- `plot` 不应作为 `analysis.xas.plotting` 的附属物。
+- 操作数据库、缓存、索引、批量数据集时，不应通过 reader 或 analyzer 临时处理。
+
+### 2.2 cellpy
+
+仓库：https://github.com/jepegit/cellpy
+
+相关结构：
+
+- `cellpy/cli.py`
+- `cellpy/readers`
+- `cellpy/exporters`
+- `cellpy/filters`
+- `cellpy/internals`
+- `cellpy/parameters`
+- `cellpy/utils`
+- `setup.py` 中配置 `cellpy=cellpy.cli:cli`
+
+可借鉴点：
+
+- 电池/电化学数据处理确实需要正式 CLI，而不是只给 notebook 使用。
+- reader、exporter、参数、过滤工具分开是实用结构。
+- CLI 入口应是明确发布契约。
+
+需要避免的点：
+
+- `cellpy/cli.py` 是一个很大的单文件 CLI。echemistpy 不应复制这种结构，应该从第一版就拆成 `cli/app.py + cli/commands/*`。
+- cellpy 的主依赖比较重。echemistpy 应该把 CLI、基础 I/O、XAS、TXM/STXM、plot、dev 依赖拆成 extras。
+
+### 2.3 HyperSpy
+
+仓库：https://github.com/hyperspy/hyperspy
+
+相关结构：
+
+- `hyperspy/api.py`
+- `hyperspy/signal.py`
+- `hyperspy/axes.py`
+- `hyperspy/model.py`
+- `hyperspy/drawing`
+- `hyperspy/learn`
+- `hyperspy/io.py`
+- `hyperspy/hyperspy_extension.yaml`
+- `pyproject.toml` 中使用 optional dependencies，例如 `learning`, `speed`, `gui-jupyter`, `gui-traitsui`
+
+可借鉴点：
+
+- 成熟科学库通常有一个面向用户的公开 API 文件，不让用户直接依赖内部模块树。
+- 数据对象、坐标轴、模型、绘图、学习/分析能力分层明显。
+- 扩展能力用声明式 metadata 管理，比靠类名推断更可靠。
+- 可选依赖拆分很重要，重型能力不应污染基础安装。
+
+对 echemistpy 的启发：
+
+- 可以提供 `echemistpy.api` 作为 notebook/脚本入口，CLI 调用同一组 service。
+- reader/analyzer/plotter 都应有显式 spec，而不是目录扫描后靠类名猜测。
+- XAS/TXM/STXM 等重型依赖必须放入 extras。
+
+### 2.4 RosettaSciIO
+
+仓库：https://github.com/hyperspy/rosettasciio
+
+相关结构：
+
+- `rsciio/_io_plugins.py`
+- 每个格式目录有自己的模块与 `specifications.yaml`
+- `rsciio/hspy`, `rsciio/nexus`, `rsciio/netcdf`, `rsciio/tiff`, `rsciio/bruker` 等大量格式目录
+
+可借鉴点：
+
+- I/O 库可以专注于“读写科学文件格式”，不承担分析和绘图。
+- 每个 I/O 插件用 `specifications.yaml` 描述 name、alias、description、extension、write support、API module 等能力。
+- 插件 registry 应读 metadata，而不是实例化 reader 或通过类名推断。
+
+对 echemistpy 的启发：
+
+- `io` 层应改为“外部格式适配器层”，只输出标准中间数据。
+- 当前 `_initialize_default_plugins()` 的类名/扩展名推断应替换为显式 `ReaderSpec`。
+
+### 2.5 pyFAI
+
+仓库：https://github.com/silx-kit/pyFAI
+
+相关结构：
+
+- `src/pyFAI/app`
+- `src/pyFAI/io`
+- `src/pyFAI/containers.py`
+- `src/pyFAI/units.py`
+- `src/pyFAI/method_registry.py`
+- `src/pyFAI/worker.py`
+- `pyproject.toml` 中有多个 `[project.scripts]`
+
+可借鉴点：
+
+- CLI 应放在单独 `app`/`cli` 层，核心算法和 worker/service 不应依赖命令行参数。
+- 容器、单位、I/O、方法 registry 都是正式模块。
+- 对于成熟命令行工具，可以暴露多个 console scripts。
+
+对 echemistpy 的启发：
+
+- 第一阶段建议只暴露一个 `echem` 入口，内部用子命令管理复杂度；后续若某些 workflow 稳定，再考虑单独脚本。
+- `units` 和 `schema` 应在 `data` 层集中管理，不能散落在标准化器、reader 和 analyzer 中。
+
+## 3. 当前代码状态
+
+### 3.1 当前模块
 
 ```text
 src/echemistpy/
   __init__.py
   io/
+    __init__.py
+    AGENTS.md
     structures.py
     base_reader.py
     plugin_manager.py
@@ -46,12 +178,16 @@ src/echemistpy/
     reader_utils.py
     saver.py
     plugins/
-      Echem_BiologicMPTReader.py
-      Echem_LanheXLSXReader.py
+      __init__.py
+      echem_biologic_mpt.py
+      echem_biologic_mpr.py
+      echem_lanhe_xlsx.py
+      echem_lanhe_ccs.py
       XAS_CLAESS.py
       TXM_MISTRAL.py
       XRD_MSPD.py
   analysis/
+    AGENTS.md
     registry.py
     pipeline.py
     echem/analyzer.py
@@ -61,186 +197,217 @@ src/echemistpy/
     xas/fitting.py
     xas/plotting.py
     xas/elements.py
-scripts/
-  workflow_operando.py
+Samples/
+docs/
 ```
 
-### 2.3 已验证行为
+注意：当前仓库没有 `scripts/workflow_operando.py`。旧文档里对该脚本的描述已经过时。
 
-使用本地 `.venv/Scripts/python.exe` 和 `PYTHONPATH=src` 验证：
+### 3.2 当前主要问题
 
-- `import echemistpy` 成功。
-- `from echemistpy.io import list_supported_formats` 成功。
-- 默认 I/O 插件可列出：`.mpt`, `.xlsx`, `.hdf5`, `.dat`, `.xye`。
-- `from echemistpy.analysis.pipeline import AnalysisPipeline` 成功。
-- `AnalysisPipeline()` 失败，错误为无法从 `echemistpy.analysis.echem` 导入 `GalvanostaticAnalyzer`。
-- `from echemistpy.analysis.echem.analyzer import GalvanostaticAnalyzer` 失败，错误为 `No module named 'echemistpy.analysis.echem.registry'`。
-- `.venv` 中没有 `pytest`。
-- `ruff check src scripts` 当前报告 70 个问题。
+- 没有 `[project.scripts]`，也没有 `src/echemistpy/cli`。
+- `io.structures` 实际是数据模型层，应迁到 `data.models`。
+- `io.standardizer` 和 `io.column_mappings` 实际是数据契约/转换层，应迁到 `data.schema` 与 `data.standardize`。
+- `io.saver` 一部分是对外导出，一部分是内部数据存储，应拆成 `io.writers` 与 `data.storage`。
+- `analysis.xas.plotting` 应迁到 `plot.xas`，避免分析模块承担绘图接口。
+- `analysis/echem`, `analysis/stxm`, `analysis/xas` 没有清晰包导出，`create_default_registry()` 依赖的导入会失败。
+- `analysis/echem/analyzer.py` 使用了错误的相对导入：`from .registry import TechniqueAnalyzer`。
+- `analysis/stxm/analyzer.py` 引用旧路径 `echemistpy.processing.analyzers.registry`。
+- XAS 标准变量名不一致：标准化倾向 `energy_eV/absorption_au`，XAS analyzer 要求 `energyc/absorption`。
+- reader 插件仍依赖插件目录扫描；能力声明已改为 `ReaderSpec`，后续可迁到 entry points。
+- 目录聚合逻辑放在 `BaseReader`，会让所有 reader 被迫承担目录组织职责。
+- 核心依赖包含 `xraylarch`, `umap-learn`, `numba`, `scikit-image` 等重型包，基础 CLI 用户不应默认安装。
+- 仓库没有 `tests/`，当前 `.venv` 也未证明 pytest 可用。
 
-## 3. 现有框架评估
+## 4. 目标架构
 
-### 3.1 可保留的部分
-
-- `RawData`, `RawDataInfo`, `AnalysisData`, `AnalysisDataInfo` 的概念是合理的。
-- `xarray.Dataset` 和 `xarray.DataTree` 适合承载多维科学数据和目录层级数据。
-- I/O 插件思路正确：不同仪器 reader 解耦，比在 `load()` 中写硬编码分支更可扩展。
-- `load(path, instrument=..., technique=...)` 作为 Python API 很实用。
-- `save_data/save_info/save_combined` 可以成为 CLI `export` 的底层能力。
-- XAS 的 `processing/fitting/plotting` 函数应保留为可复用算法模块。
-- `AnalysisPipeline` 的方向正确：CLI 不应该直接操作复杂 analyzer，而应调用统一服务。
-
-### 3.2 必须重构的部分
-
-- CLI 层不存在，必须新增。
-- analysis package 边界缺失，必须补齐 `__init__.py` 和导出策略。
-- `TechniqueRegistry` 当前只按单一 technique 字符串匹配，和 reader 产生的 technique list 不完全适配。
-- reader 插件注册缺少显式元信息，应从“类名推断”改为“插件类声明”。
-- 数据标准名必须统一，不能 reader、standardizer、analyzer 各用一套变量名。
-- 标准化不应默认破坏 analyzer 契约。例如 XAS loader 输出 `energyc/absorption`，standardizer 又改成 `energy_eV/absorption_au`，会导致 analyzer 失效。
-- `scripts/workflow_operando.py` 仍引用旧包名 `claess2025`，不能作为当前项目示例。
-- `traitlets` 用在普通数据容器和 reader 配置上增加复杂度，但收益有限；需要决定保留还是替换为 `dataclasses/pydantic`。
-- `BaseReader._get_file_extension()` 反向查询全局 plugin manager，是不必要且脆弱的依赖方向。
-- 错误处理粒度不稳定，很多 reader 捕获 `Exception` 后跳过文件，CLI 需要可配置的 strict/lenient 模式和明确退出码。
-
-## 4. 重构目标
-
-### 4.1 产品目标
-
-把项目做成一个可长期扩展的 CLI 库：
-
-```bash
-echem formats
-echem inspect data.mpt
-echem load data.mpt --instrument biologic --out raw.nc
-echem export data.mpt --format csv --out data.csv
-echem analyze data.mpt --technique gcd --out analysis.nc
-echem workflow operando-xas ./data --config workflow.yaml --out results/
-```
-
-CLI 应该是“薄壳”：参数解析、日志、错误输出、退出码、配置文件解析。核心业务逻辑必须在 Python API 层完成，保证未来可以被 notebook、脚本、GUI 或其他 agent 调用。
-
-### 4.2 工程目标
-
-- 可运行：基础 import、format listing、load、save、analyze 都可验证。
-- 可测试：每个 reader 至少有 fixture 和 smoke test。
-- 可扩展：新增 reader/analyzer 不需要改 CLI 主逻辑。
-- 可裁剪依赖：最小安装只支持 CLI 基础和轻量 I/O；重型分析依赖放到 extras。
-- 可追踪：CLI 输出结构化日志，失败时给出清晰原因。
-- 可维护：reader/analyzer/service 分层，避免单类过长。
-
-### 4.3 非目标
-
-- 第一阶段不追求完整科学算法准确性重写。
-- 第一阶段不做 GUI。
-- 第一阶段不把所有 legacy workflow 迁入 CLI。
-- 第一阶段不需要一次性支持所有仪器的高级分析。
-
-## 5. 推荐目标架构
+推荐目标结构：
 
 ```text
 src/echemistpy/
+  api.py
   cli/
     __init__.py
     app.py
+    output.py
+    errors.py
     commands/
       formats.py
       inspect.py
-      load.py
-      export.py
+      convert.py
+      index.py
       analyze.py
+      plot.py
       workflow.py
-    output.py
-    errors.py
+      doctor.py
   core/
-    models.py
-    result.py
     exceptions.py
     logging.py
+    options.py
     paths.py
+  data/
+    __init__.py
+    models.py
+    metadata.py
+    schema.py
+    units.py
+    standardize.py
+    transform.py
+    xarray.py
+    storage.py
+    index.py
+    validation.py
   io/
+    __init__.py
     api.py
     contracts.py
     registry.py
-    standard_names.py
-    standardize.py
-    save.py
     readers/
       biologic_mpt.py
       lanhe_xlsx.py
+      lanhe_ccs.py
       claess_dat.py
       mistral_hdf5.py
       mspd_xye.py
+    writers/
+      csv.py
+      netcdf.py
+      json.py
   analysis/
+    __init__.py
     api.py
     contracts.py
     registry.py
     echem/
       galvanostatic.py
+      cv.py
+      eis.py
     xas/
       analyzer.py
       processing.py
       fitting.py
-      plotting.py
-    stxm/
+      elements.py
+    txm/
       analyzer.py
+    xrd/
+      analyzer.py
+  plot/
+    __init__.py
+    api.py
+    contracts.py
+    registry.py
+    styles.py
+    echem.py
+    xas.py
+    xrd.py
+    txm.py
   workflows/
+    __init__.py
     operando_xas.py
   plugins/
     discovery.py
 ```
 
-### 5.1 分层原则
+### 4.1 模块边界
 
-- `cli`: 只做命令行交互，不做科学计算。
-- `core`: 放通用数据模型、异常、结果对象、日志和路径工具。
-- `io`: 只负责把文件变成标准 `RawDataBundle`，以及保存/导出。
-- `analysis`: 只负责把标准数据变成分析结果。
-- `workflows`: 组合多个 I/O 和 analysis service，适合复杂场景。
-- `plugins`: 负责发现第三方 reader/analyzer。
+`io`
 
-## 6. 数据模型设计
+- 负责不同数据接口的读取/写入。
+- 输入：外部文件、目录、数据库导出、仪器格式。
+- 输出：`data.DataBundle`，或者对外写出 CSV/NetCDF/JSON 等。
+- 不负责科学分析。
+- 不负责绘图。
+- 不持有标准变量名的最终解释权，只引用 `data.schema`。
 
-### 6.1 推荐核心模型
+`data`
 
-当前 `RawData` 和 `RawDataInfo` 可以保留概念，但建议改成更明确的 bundle：
+- 负责中间数据如何传输、转化、分发。
+- 负责标准 schema、单位、metadata、provenance、warnings。
+- 负责 xarray 接口、DataTree 规则、表格转换、lazy/chunk 策略。
+- 负责高效存储：NetCDF/Zarr/HDF5/Parquet，以及 SQLite/DuckDB 索引。
+- 负责 cache/index，不把数据库逻辑塞进 reader。
+
+`analysis`
+
+- 负责分析技术：GCD、CV、EIS、XAS normalization/LCF/PCA、TXM/STXM clustering、XRD peak fitting 等。
+- 输入：标准化后的 `DataBundle`。
+- 输出：`AnalysisBundle` 或 `DataBundle` 的分析结果版本。
+- 不读取原始文件。
+- 不保存图。
+- 不直接处理 CLI 参数。
+
+`plot`
+
+- 负责画图接口。
+- 输入：标准数据或分析结果。
+- 输出：figure 对象和图像文件。
+- 不做改变科学结果的分析，只做视图层需要的轻量选择、组合、样式。
+- `analysis.xas.plotting` 应迁入这里。
+
+`cli`
+
+- 只负责命令行参数、配置文件、日志、退出码、人类可读/JSON 输出。
+- 所有业务逻辑调用 `api.py` 或各层 service。
+
+`workflows`
+
+- 组合 `io -> data -> analysis -> plot -> storage`。
+- 只放稳定、有明确输入输出契约的多步流程。
+
+## 5. 数据层设计
+
+### 5.1 核心对象
+
+第一版不需要发明复杂继承体系。建议用清晰 dataclass 包装 xarray：
 
 ```python
 @dataclass
-class RawDataBundle:
+class DataBundle:
     data: xr.Dataset | xr.DataTree
-    info: RawDataInfo
+    meta: Metadata
+    schema: str
+    provenance: Provenance
+    warnings: list[str] = field(default_factory=list)
 
 @dataclass
 class AnalysisBundle:
     data: xr.Dataset | xr.DataTree
-    info: AnalysisDataInfo
+    meta: Metadata
+    schema: str
+    provenance: Provenance
+    parameters: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 ```
 
-原因：
+现有 `RawData`, `RawDataInfo`, `AnalysisData`, `AnalysisDataInfo` 可以先保留为兼容层，但新代码应逐步转向 `DataBundle/AnalysisBundle`。
 
-- CLI 和 service 返回一个对象比返回 tuple 更稳定。
-- 后续可以给 bundle 增加 `source_path`, `warnings`, `provenance`, `schema_version`。
-- 旧 API 可保留兼容包装：`load()` 继续返回 `(RawData, RawDataInfo)`，新 API 返回 bundle。
+### 5.2 xarray 规则
 
-### 6.2 标准变量命名
+- `xr.Dataset` 用于单个测量或单个分析结果。
+- `xr.DataTree` 用于目录、批量、operando 多源数据。
+- 坐标和变量命名必须 NetCDF/Zarr 友好，不允许 `/`, `%`, `-` 开头、空格等。
+- 单位不要只写在变量名中，应写入 `DataArray.attrs["units"]`，变量名保留物理量与标准单位提示。
+- `record` 是通用一维采样维度。
+- `cycle_number`, `energy_ev`, `two_theta_deg`, `x_um`, `y_um` 等应优先作为 coord。
 
-需要建立唯一标准命名表，并让 reader、standardizer、analyzer 全部依赖它。
+### 5.3 标准 schema
 
-建议第一版标准：
+第一版建议定义 `schema_version = "echemistpy-raw-v1"` 和 `analysis_schema_version = "echemistpy-analysis-v1"`。
+
+推荐变量名：
 
 ```text
-通用：
+通用:
   record
   time_s
-  systime
+  timestamp
 
-电化学：
+电化学:
   cycle_number
   step_number
+  voltage_v
   ewe_v
   ece_v
-  voltage_v
   current_ma
   capacity_mah
   specific_capacity_mah_g
@@ -248,37 +415,45 @@ class AnalysisBundle:
   re_z_ohm
   neg_im_z_ohm
 
-XAS：
+XAS:
   energy_ev
   absorption
   norm_absorption
   e0_ev
+  edge_step
 
-XRD：
+XRD:
   two_theta_deg
   intensity
   intensity_error
   d_spacing_angstrom
 
-TXM/STXM：
+TXM/STXM:
   energy_ev
   x_um
   y_um
   transmission
   optical_density
+  cluster_label
 ```
 
-重点：不要在标准名中使用 `/`, `%`, `-` 开头等 NetCDF/DataTree 不友好的字符。当前 `-im_z_ohm`、`2theta_degree`、`d-spacing_angstrom` 都应调整。
+旧变量名兼容策略：
 
-### 6.3 元数据设计
+- reader 可以先输出旧变量名。
+- `data.standardize` 统一转换到 schema 名。
+- analyzer 只能声明和消费标准名。
+- CLI 默认输出标准名；`inspect --raw` 可以显示原始列名映射。
 
-建议把元数据分为四类：
+### 5.4 元数据
+
+元数据分组：
 
 ```text
 identity:
   sample_name
   technique
   instrument
+  source_id
 
 acquisition:
   start_time
@@ -288,238 +463,375 @@ acquisition:
 
 sample:
   active_material_mass_g
+  electrolyte
   wavelength_angstrom
 
 provenance:
   reader_name
   reader_version
-  standard_schema_version
+  schema_version
+  source_hash
+  created_at
   warnings
   raw_metadata
 ```
 
-`others` 可以保留，但应作为 `raw_metadata`，避免标准字段和动态字段混在一起。
+`others` 可以保留为兼容字段，但新模型应使用 `raw_metadata`。
 
-## 7. 插件设计
+### 5.5 存储与索引
 
-### 7.1 Reader 协议
+`data.storage` 负责内部高效存储，不等同于 `io.writers`。
 
-每个 reader 应显式声明能力，不依赖类名推断：
+推荐规则：
+
+- 单个标准数据：NetCDF (`.nc`) 或 Zarr。
+- 大型层级/operando 数据：Zarr 或 HDF5/NetCDF group。
+- 表格导出：Parquet/CSV，由 `io.writers` 提供。
+- 索引与检索：SQLite 或 DuckDB，只存 metadata、source hash、schema、路径、状态，不直接塞大型数组。
+- 缓存 key：`source_hash + reader_name + reader_version + schema_version + options_hash`。
+
+这能支持命令：
+
+```bash
+echem index add ./data --instrument biologic --store ./echem-index.duckdb
+echem index query --sample MnO2 --technique gcd
+echem convert data.mpt --out raw.zarr
+```
+
+## 6. I/O 层设计
+
+### 6.1 ReaderSpec
+
+借鉴 RosettaSciIO 的声明式插件思路，reader 必须显式声明能力：
 
 ```python
-class ReaderSpec(TypedDict):
+@dataclass(frozen=True)
+class ReaderSpec:
     name: str
     extensions: tuple[str, ...]
     instruments: tuple[str, ...]
     techniques: tuple[str, ...]
-    supports_directory: bool
+    supports_directory: bool = False
+    can_inspect: bool = True
+    description: str = ""
+```
 
+reader 协议：
+
+```python
 class DataReader(Protocol):
     spec: ClassVar[ReaderSpec]
 
-    def read(self, path: Path, options: ReaderOptions) -> RawDataBundle:
+    def inspect(self, path: Path, options: ReaderOptions) -> DataPreview:
+        ...
+
+    def read(self, path: Path, options: ReaderOptions) -> DataBundle:
         ...
 ```
 
-reader 注册时只读 `spec`：
+### 6.2 Reader 职责
+
+reader 只做三件事：
+
+1. 识别和解析某种外部格式。
+2. 提取原始 metadata。
+3. 构造最接近标准 schema 的 `DataBundle`。
+
+reader 不应该：
+
+- 调用 analyzer。
+- 生成正式图。
+- 管理全局数据库。
+- 根据 CLI 参数决定输出格式。
+- 依赖全局 plugin manager 反查自己的扩展名。
+
+### 6.3 Registry
+
+内置 reader 可以直接注册：
 
 ```python
 registry.register(BiologicMptReader)
 registry.register(LanheXlsxReader)
+registry.register(LanheCcsReader)
 ```
 
-### 7.2 Analyzer 协议
-
-Analyzer 也应显式声明输入契约：
-
-```python
-class AnalyzerSpec(TypedDict):
-    name: str
-    techniques: tuple[str, ...]
-    instruments: tuple[str, ...] | None
-    required_variables: tuple[str, ...]
-    output_schema: str
-
-class Analyzer(Protocol):
-    spec: ClassVar[AnalyzerSpec]
-
-    def analyze(self, bundle: RawDataBundle, options: AnalysisOptions) -> AnalysisBundle:
-        ...
-```
-
-这样 `analyze` 命令可以先做 dry-run 校验：
-
-```bash
-echem analyze data.mpt --technique gcd --check
-```
-
-### 7.3 第三方插件
-
-未来可用 entry points：
+第三方 reader 后续用 entry points：
 
 ```toml
 [project.entry-points."echemistpy.readers"]
 biologic_mpt = "echemistpy.io.readers.biologic_mpt:BiologicMptReader"
-
-[project.entry-points."echemistpy.analyzers"]
-gcd = "echemistpy.analysis.echem.galvanostatic:GalvanostaticAnalyzer"
 ```
 
-内置插件不需要特殊扫描目录；第三方插件通过 `importlib.metadata.entry_points()` 发现。
+同一扩展名多 reader 时：
 
-## 8. CLI 设计
+- `load(path)` 不能静默选第一个。
+- 必须返回 ambiguity error，并显示可用 instrument。
+- `load(path, instrument="lanhe")` 才能继续。
 
-### 8.1 CLI 框架选择
+## 7. 分析层设计
 
-建议使用 `Typer`。
+### 7.1 AnalyzerSpec
 
-理由：
+```python
+@dataclass(frozen=True)
+class AnalyzerSpec:
+    name: str
+    domain: str
+    techniques: tuple[str, ...]
+    instruments: tuple[str, ...] | None
+    input_schema: str
+    output_schema: str
+    required_variables: tuple[str, ...]
+```
 
-- 命令层类型标注清晰。
-- 比 argparse 更适合多子命令。
-- 输出帮助信息友好。
-- 适合快速发展阶段。
+协议：
 
-需要在 `pyproject.toml` 增加：
+```python
+class Analyzer(Protocol):
+    spec: ClassVar[AnalyzerSpec]
+
+    def analyze(self, bundle: DataBundle, options: AnalysisOptions) -> AnalysisBundle:
+        ...
+```
+
+### 7.2 分析模块内部规则
+
+- `analysis.echem` 放 GCD/CV/EIS/CA/CP 等。
+- `analysis.xas` 放 normalization、E0、LCF、PCA、AutoBK、FFT 等科学计算。
+- `analysis.txm` 或 `analysis.stxm` 放图像堆栈配准、PCA、clustering、ROI、chemical map。
+- `analysis.xrd` 放 peak detection、拟合、相位/峰表处理。
+- 绘图函数不放在 analysis 内。
+- 文件读取不放在 analysis 内。
+- 每个 analyzer 的 required variables 必须和 `data.schema` 一致。
+
+### 7.3 当前分析层修复方向
+
+- 增加 `analysis/__init__.py`。
+- 增加 `analysis/echem/__init__.py`、`analysis/xas/__init__.py`、`analysis/stxm/__init__.py`。
+- 修复 `echem/analyzer.py` 的导入为 `from echemistpy.analysis.registry import TechniqueAnalyzer`。
+- 修复 `stxm/analyzer.py` 的旧导入路径。
+- 让 `create_default_registry()` 从明确模块导入，不依赖子包根的隐式导出。
+- XAS analyzer 的 `required_columns` 改为 `("energy_ev", "absorption")`，并同步处理内部变量名。
+
+## 8. Plot 层设计
+
+### 8.1 PlotSpec
+
+```python
+@dataclass(frozen=True)
+class PlotSpec:
+    name: str
+    domain: str
+    input_schema: str
+    required_variables: tuple[str, ...]
+    output_kinds: tuple[str, ...] = ("figure", "png", "svg", "pdf")
+```
+
+协议：
+
+```python
+class Plotter(Protocol):
+    spec: ClassVar[PlotSpec]
+
+    def render(self, bundle: DataBundle | AnalysisBundle, options: PlotOptions) -> PlotResult:
+        ...
+```
+
+### 8.2 推荐 plot API
+
+```python
+from echemistpy.plot import plot_data
+
+fig = plot_data(bundle, kind="echem-cycle")
+fig = plot_data(result, kind="xas-normalized")
+```
+
+CLI：
+
+```bash
+echem plot data.mpt --kind echem-cycle --out cycle.png
+echem plot xas.nc --kind xas-normalized --out xas.svg
+echem plot txm.zarr --kind txm-map --variable optical_density --out map.png
+```
+
+### 8.3 绘图边界
+
+plot 可以：
+
+- 选择变量。
+- 组合子图。
+- 设置样式。
+- 输出图像。
+
+plot 不应该：
+
+- 改变分析结果。
+- 在内部重新读取原始文件。
+- 修改 `DataBundle`。
+- 为了画图执行不可见的科学计算；如果需要计算，应先由 analysis 产生结果。
+
+## 9. CLI 设计
+
+### 9.1 入口
+
+第一阶段建议只暴露一个 console script：
 
 ```toml
 [project.scripts]
 echem = "echemistpy.cli.app:app"
+```
 
+使用 Typer：
+
+```toml
 [project.optional-dependencies]
 cli = ["typer>=0.12", "rich>=13"]
 ```
 
-如果希望避免新依赖，也可以用 argparse，但长期命令树会更难维护。
-
-### 8.2 命令树
+### 9.2 命令树
 
 ```text
 echem
   formats
   inspect PATH
-  load PATH
-  export PATH
+  convert PATH
   analyze PATH
+  plot PATH
+  index add PATH
+  index query
   workflow NAME PATH
   doctor
 ```
 
-### 8.3 命令职责
+### 9.3 命令职责
 
 `formats`
 
-- 列出已注册 reader。
-- 输出 extension、instrument、technique、是否支持目录。
+- 列出 reader/writer/analyzer/plotter registry。
+- 输出 extension、instrument、technique、是否支持目录、是否支持写出。
 
 `inspect PATH`
 
-- 只读取元数据和基本数据结构。
-- 输出 dataset dims、variables、coords、attrs、reader 匹配结果。
-- 不做重分析。
+- 只做 reader 匹配、metadata、dims、变量、coords、schema preview。
+- 支持 `--json` 和 `--raw`。
 
-`load PATH`
+`convert PATH`
 
 - 读取并标准化。
-- 默认输出摘要。
-- 可选 `--out raw.nc/json/csv`。
-
-`export PATH`
-
-- 读取后导出为 `nc/csv/json`。
-- 支持 `--no-standardize`。
+- 输出 NetCDF/Zarr/CSV/Parquet/JSON。
+- 取代旧文档里的 `load/export` 命令分裂，减少 CLI 面。
 
 `analyze PATH`
 
-- 读取、标准化、选择 analyzer、运行分析、保存结果。
-- 支持 `--params params.yaml`。
+- 读取或打开标准数据。
+- 选择 analyzer。
+- 保存分析结果。
+- 支持 `--check` 做 schema dry-run。
 
-`workflow NAME PATH`
+`plot PATH`
 
-- 用于 operando XAS 等多步流程。
-- workflow 不应挤在 `scripts/`，应作为正式模块。
+- 打开标准数据或分析结果。
+- 选择 plotter。
+- 保存图。
+
+`index`
+
+- 管理本地数据索引和缓存。
+
+`workflow`
+
+- 编排 operando XAS 等多步流程。
 
 `doctor`
 
-- 检查依赖、插件、可导入性、测试环境、可选依赖缺失。
+- 检查包导入、插件、可选依赖、schema、测试环境。
 
-### 8.4 输出规则
+### 9.4 CLI 输出
 
-CLI 默认输出人类可读摘要：
+默认人类可读：
 
 ```text
 Reader: BiologicMptReader
 Instrument: biologic
 Technique: echem,gcd
+Schema: echemistpy-raw-v1
 Rows: 12000
-Variables: time_s, ewe_v, current_ma, capacity_mah
-Output: raw.nc
+Variables: time_s, voltage_v, current_ma, capacity_mah
+Warnings: 1
 ```
 
-同时提供机器可读输出：
+机器可读：
 
 ```bash
 echem inspect data.mpt --json
 ```
 
-错误输出必须明确：
+错误应可操作：
 
 ```text
-Error: no reader found for .xlsx
-Available xlsx readers:
+Error: multiple readers match extension ".xlsx"
+Available instruments:
   - lanhe
 Suggestion: pass --instrument lanhe
 ```
 
-## 9. 服务层 API
+## 10. Public Python API
 
-CLI 应调用 service，不应直接调用 reader/analyzer 内部方法。
-
-建议 API：
+提供 `echemistpy.api`，让 notebook、脚本和 CLI 调用同一套服务。
 
 ```python
-from echemistpy.io.api import load_data, inspect_data, list_formats
-from echemistpy.analysis.api import analyze_data
+from echemistpy.api import load_data, analyze_data, plot_data, save_data
 
-bundle = load_data(path, instrument="biologic", standardize=True)
+bundle = load_data("data.mpt", instrument="biologic")
 result = analyze_data(bundle, technique="gcd")
+figure = plot_data(result, kind="echem-cycle")
+save_data(result, "analysis.nc")
 ```
 
 服务层职责：
 
-- reader 匹配
-- option 合并
-- strict/lenient 模式
-- warning 收集
-- 标准化
-- 保存 provenance
+- reader/analyzer/plotter 匹配。
+- options 合并。
+- strict/lenient 模式。
+- warnings 收集。
+- schema 校验。
+- provenance 写入。
+- 输出路径与缓存策略。
 
-## 10. 依赖拆分
+## 11. 依赖拆分
 
-建议最小依赖：
+当前依赖太重。建议：
 
 ```text
-core:
+base:
   numpy
   pandas
   xarray
   h5netcdf
   openpyxl
+  traitlets 或 pydantic/dataclasses 二选一
 
 cli:
   typer
   rich
 
+storage:
+  zarr
+  pyarrow
+  duckdb
+
+plot:
+  matplotlib
+
 analysis:
   scipy
-  matplotlib
   scikit-learn
   lmfit
 
 xas:
   xraylarch
 
-stxm:
+txm:
   scikit-image
   umap-learn
   numba
@@ -532,179 +844,177 @@ dev:
   ty
 ```
 
-这样用户可以：
+安装示例：
 
 ```bash
 pip install echemistpy-cli[cli]
+pip install echemistpy-cli[cli,plot]
 pip install echemistpy-cli[xas]
-pip install echemistpy-cli[stxm]
+pip install echemistpy-cli[txm]
 pip install echemistpy-cli[all]
 ```
 
-## 11. 测试策略
-
-第一阶段测试只追求可运行和契约稳定：
-
-- `test_imports.py`: 所有公开模块可导入。
-- `test_formats.py`: 内置 reader 注册成功。
-- `test_reader_contracts.py`: 每个 reader 有 `spec`，扩展名唯一或可按 instrument disambiguate。
-- `test_standard_names.py`: 标准化后变量名符合 schema。
-- `test_cli_smoke.py`: `echem formats`, `echem doctor` 可运行。
-- `test_analysis_registry.py`: 默认 analyzer registry 可实例化。
-
-每个仪器格式需要最小 fixture：
-
-```text
-tests/fixtures/
-  biologic/sample.mpt
-  lanhe/sample.xlsx
-  claess/sample.dat
-  mistral/sample.hdf5
-  mspd/sample.xye
-```
-
-如果真实样本有版权或体积问题，应制作极小 synthetic fixture。
-
 ## 12. 迁移路线
 
-### 阶段 0：冻结当前行为
+### 阶段 0：记录当前事实
 
-目标：确认当前行为和失败点。
-
-工作：
-
-- 增加 `tests/test_imports.py`。
-- 增加 `tests/test_io_formats.py`。
-- 记录当前失败项，不急于修所有科学逻辑。
-
-验收：
-
-- `echemistpy.io.list_supported_formats()` 可测试。
-- `AnalysisPipeline()` 当前失败被测试捕获，作为后续修复目标。
-
-### 阶段 1：修复包结构和可导入性
-
-目标：项目能作为 Python 库稳定导入。
+目标：不继续在错误假设上设计。
 
 工作：
 
-- 给 `analysis/`, `analysis/echem/`, `analysis/stxm/`, `analysis/xas/` 增加 `__init__.py`。
-- 修复 `echem/analyzer.py` 的 `from .registry` 为正确导入。
-- 修复 `stxm/analyzer.py` 的旧路径 `echemistpy.processing...`。
-- 修复 `create_default_registry()` 导入路径。
-- 暂时移除或隔离 `scripts/workflow_operando.py` 的旧 `claess2025` 引用。
+- 更新本文档。
+- 增加最小导入测试。
+- 增加当前 reader registry smoke test。
+- 记录当前失败项。
 
 验收：
 
-- `AnalysisPipeline().registry.available()` 成功。
-- 公开 import 全部通过。
+- `import echemistpy` 通过。
+- `from echemistpy.io import list_supported_formats` 通过。
+- 文档中的当前模块清单与仓库一致。
 
-### 阶段 2：建立标准数据契约
+### 阶段 1：建立 data 层
 
-目标：reader、standardizer、analyzer 使用同一套变量名。
+目标：把数据契约从 `io` 拆出来。
 
 工作：
 
-- 新增 `io/standard_names.py`。
-- 重写 `column_mappings.py` 输出目标名。
-- 修复 XAS 标准名冲突。
-- 明确 `DataTree` 节点级 metadata 存放规则。
+- 新增 `echemistpy/data`。
+- 迁移或包装 `io.structures` 到 `data.models`。
+- 迁移 `standardizer.py` 和 `column_mappings.py` 到 `data.standardize` 与 `data.schema`。
+- 新增标准名和单位表。
+- 保留旧 import 的兼容层。
 
 验收：
 
-- 每个 reader 加载后可通过 schema 校验。
-- analyzer required variables 和标准化输出一致。
+- reader 输出可以通过 `data.validation.validate_schema()`。
+- analyzer required variables 与 schema 一致。
 
-### 阶段 3：重构 I/O 插件
+### 阶段 2：重构 I/O registry
 
-目标：reader 可扩展、可测试、可被 CLI 查询。
+目标：reader 可发现、可测试、可解释。
 
 工作：
 
 - 新增 `ReaderSpec`。
-- reader 类声明 `spec`。
-- registry 不再依赖类名推断。
-- 保留旧 `load()` 作为兼容包装。
-- 把目录加载通用逻辑抽到 service，reader 只负责单文件解析，除非确实需要仪器特殊目录逻辑。
+- 为 Biologic MPT、Lanhe XLSX、Lanhe CCS、CLAESS DAT、MISTRAL HDF5、MSPD XYE 声明 spec。
+- 移除类名推断和 `_get_file_extension()` 反查。
+- 将目录聚合迁到 service 或明确的 directory reader。
+- 增加 `inspect()` API。
 
 验收：
 
-- `list_formats()` 返回结构化 registry 信息。
-- 同扩展名多 reader 时必须按 instrument disambiguate。
+- `list_formats()` 返回结构化信息。
+- 同扩展名多 reader 时不会静默选错。
+- 每个 reader 有最小 fixture smoke test。
 
-### 阶段 4：新增 CLI 薄壳
+### 阶段 3：修复 analysis 层
 
-目标：最小 CLI 可用。
+目标：分析 registry 可用，分析只消费标准数据。
 
 工作：
 
-- 新增 `echemistpy.cli.app`。
-- 增加 `[project.scripts] echem = ...`。
-- 实现 `formats`, `doctor`, `inspect`, `load`, `export`。
-- CLI 调用 service API，不直接调用 reader 内部。
+- 补齐 `__init__.py`。
+- 修复错误导入。
+- 新增 `AnalyzerSpec`。
+- 修复 XAS 标准变量名冲突。
+- 将 analyzer 参数整理为 options。
+
+验收：
+
+- `AnalysisPipeline().registry.available()` 成功。
+- `echem analyze --check` 能报告 schema 是否满足 analyzer。
+
+### 阶段 4：建立 plot 层
+
+目标：绘图成为独立公共接口。
+
+工作：
+
+- 新增 `echemistpy/plot`。
+- 迁移 `analysis/xas/plotting.py` 到 `plot/xas.py`。
+- 新增 `plot/echem.py`, `plot/xrd.py`, `plot/txm.py` 的最小接口。
+- 新增 `PlotSpec` 和 plot registry。
+
+验收：
+
+- `plot_data(bundle, kind=...)` 返回 matplotlib figure。
+- `echem plot ... --out figure.png` 可运行。
+
+### 阶段 5：新增 CLI 薄壳
+
+目标：最小 CLI 可发布。
+
+工作：
+
+- 新增 `echemistpy/cli/app.py` 和 `commands/*`。
+- 添加 `[project.scripts] echem = ...`。
+- 实现 `formats`, `inspect`, `convert`, `doctor`。
+- 再实现 `analyze`, `plot`, `index`, `workflow`。
 
 验收：
 
 - `echem formats` 可运行。
-- `echem inspect sample.mpt` 可运行。
-- `echem export sample.mpt --format csv --out sample.csv` 可运行。
+- `echem inspect Samples/...` 可运行。
+- `echem convert Samples/... --out raw.nc` 可运行。
+- `echem doctor` 能报告缺失 optional dependencies。
 
-### 阶段 5：分析与 workflow
+### 阶段 6：存储、索引和 workflow
 
-目标：CLI 支持可配置分析。
+目标：支持批量数据和长期复用。
 
 工作：
 
-- 新增 `AnalyzerSpec`。
-- 修复默认 registry。
-- `analyze` 支持 `--technique`, `--instrument`, `--params yaml/json`。
-- 把 operando XAS 示例从 `scripts/` 迁移到 `workflows/operando_xas.py`。
+- 新增 `data.storage` 和 `data.index`。
+- 实现 cache key。
+- 支持 SQLite/DuckDB 索引。
+- 将稳定的 operando XAS 流程迁到 `workflows/operando_xas.py`。
 
 验收：
 
-- `echem analyze sample.mpt --technique gcd` 可运行。
-- `echem workflow operando-xas ./data --config config.yaml` 有明确输入/输出契约。
+- `echem index add ./Samples` 可生成索引。
+- `echem index query` 可返回匹配数据。
+- workflow 有清晰输入、输出、缓存、日志。
 
-## 13. 风险与取舍
+## 13. 第一批 PR 建议
 
-- `traitlets` 是否保留：如果项目未来需要 notebook/widget 配置联动，保留有价值；如果目标是 CLI 和脚本，`dataclasses` 或 `pydantic` 更直接。
-- `DataTree` 是否作为公共契约：它适合层级数据，但对普通 CLI 用户复杂。CLI 输出应隐藏复杂性，只在 `inspect --verbose` 展示树结构。
-- 重型依赖拆分会改变安装体验，但这是 CLI 实用性的关键。
-- 标准名重命名会破坏旧 API，需要提供兼容层或迁移说明。
-- 科学算法不应在结构重构中大改，否则难以判断问题来自架构还是算法。
+第一批不要大改科学算法，目标是先把库变成“可导入、可检查、可验证”的 CLI 库基础。
 
-## 14. 优先级建议
+1. 新增 `data` 包，迁移/兼容 `io.structures`。
+2. 新增 `data.schema`，统一变量名，先修 XAS `energy_ev/absorption` 冲突。
+3. 补齐 `analysis` 子包导出并修复当前错误导入。
+4. 新增 `ReaderSpec`，先为现有 reader 声明 spec，不重写 reader 内部解析。
+5. 新增 `cli/app.py`，只实现 `formats` 和 `doctor`。
+6. 新增 `tests/test_imports.py`, `tests/test_formats.py`, `tests/test_analysis_registry.py`。
 
-最高优先级：
+这样改动足够小，但方向已经对齐最终结构。
 
-- 修包导入和 registry。
-- 增加 CLI 入口。
-- 固定标准变量名。
-- 增加 smoke tests。
+## 14. 设计取舍
 
-中优先级：
+- 是否保留 traitlets：如果未来重 notebook widget/GUI，保留 traitlets 有意义；如果重点是 CLI 和脚本，`dataclasses` 或 pydantic 更直接。第一阶段可以先兼容 traitlets，不在同一 PR 内替换。
+- 是否直接采用 HyperSpy/RosettaSciIO：不建议。echemistpy 的范围横跨电化学、XAS、XRD、TXM，且已有 xarray 数据模型；直接依赖大型框架会增加迁移成本。应借鉴它们的边界和 registry 思路。
+- 是否把所有写出都放在 `io`：对外格式写出放 `io.writers`，内部缓存/索引/高效存储放 `data.storage`。这能避免 `io` 再次膨胀。
+- 是否一开始支持复杂数据库：不建议。先用文件存储 + SQLite/DuckDB metadata index，避免把数据库设计变成主任务。
+- 是否一开始暴露多个 CLI scripts：不建议。先用一个 `echem` 子命令入口，等 workflow 稳定再考虑单独脚本。
 
-- reader spec 化。
-- 依赖 extras 拆分。
-- `doctor` 命令。
-- 输出 JSON 摘要。
+## 15. 最终判断
 
-低优先级：
+更优设计不是“当前 `io` 继续变大、`analysis` 继续加功能、最后补 CLI”，而是先确立中心数据层：
 
-- 完整 workflow CLI。
-- 第三方 entry point 插件。
-- 高级可视化命令。
-- 性能优化和并行加载。
+```text
+external files
+  -> io readers
+  -> data schema / standardize / storage
+  -> analysis analyzers
+  -> plot renderers
+  -> cli/workflows as orchestration
+```
 
-## 15. 推荐第一批改动清单
+按这个方向，`echemistpy-cli` 才能同时满足：
 
-如果进入实际编码，建议第一批 PR 只做“可运行骨架”，不要同时大改算法：
-
-1. 新增 package `__init__.py` 并修复错误导入。
-2. 新增 `echemistpy/cli/app.py`，实现 `echem formats` 和 `echem doctor`。
-3. 在 `pyproject.toml` 添加 `[project.scripts]`。
-4. 新增 `tests/test_imports.py` 和 `tests/test_formats.py`。
-5. 修复 `scripts/workflow_operando.py` 的旧包名或移动为非发布示例。
-6. 增加 `ReaderSpec`，但先不重写所有 reader 内部逻辑。
-
-这样可以快速把项目从“源码原型”推进到“可安装、可调用、可验证”的 CLI 库基础。
+- 命令行可用。
+- Python API 可复用。
+- 新仪器 reader 可扩展。
+- 新分析技术可插拔。
+- 数据可缓存、可索引、可转换。
+- 绘图接口稳定，不污染科学分析逻辑。

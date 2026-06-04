@@ -9,7 +9,7 @@
 - 电流：current_ma（毫安）、current_ua（微安）
 - 容量/电荷：capacity_mah（毫安时）、q_mah（电荷）
 - 频率：frequency_hz
-- 阻抗：re_z_ohm（实部）、-im_z_ohm（虚部，负值）
+- 阻抗：re_z_ohm（实部）、neg_im_z_ohm（负虚部）
 """
 
 from __future__ import annotations
@@ -72,6 +72,29 @@ RECORD_MAPPINGS: dict[str, str] = {
     "Record": "record",
 }
 
+PROCESS_MAPPINGS: dict[str, str] = {
+    "flags": "flags",
+    "mode": "mode",
+    "ox/red": "ox_red",
+    "WorkMode": "work_mode",
+    "work_mode": "work_mode",
+    "StepInProcess": "step_in_process",
+    "step_in_process": "step_in_process",
+    "StepDuration_s": "step_duration_s",
+    "StepDuration_ms": "step_duration_ms",
+    "StepTime_s": "step_time_s",
+    "StepTime_ms": "step_time_ms",
+    "TestTime_s": "test_time_s",
+    "TestTime_ms": "test_time_ms",
+    "step time/s": "step_time_s",
+    "StepStartTestTime_ms": "step_start_test_time_ms",
+    "StepWallStart_ms": "step_wall_start_ms",
+    "StateWord": "state_word",
+    "I Range": "current_range",
+    "half cycle": "half_cycle",
+    "step time_s": "step_time_s",
+}
+
 # ============================================================================
 # 电压/电势列映射
 # ============================================================================
@@ -88,12 +111,19 @@ WORKING_ELECTRODE_MAPPINGS: dict[str, str] = {
     "voltage_v": "ewe_v",
     "Potential/V": "ewe_v",
     "Potential_V": "ewe_v",
+    "<Ewe>/V": "ewe_v",
+    "<Ewe>_V": "ewe_v",
+    "<Ecv>/V": "ewe_v",
+    "|Ewe|/V": "abs_ewe_v",
+    "|Ewe|_V": "abs_ewe_v",
 }
 
 # 对电极电势
 COUNTER_ELECTRODE_MAPPINGS: dict[str, str] = {
     "Ece/V": "ece_v",
     "Ece_V": "ece_v",
+    "<Ece>/V": "ece_v",
+    "<Ece>_V": "ece_v",
 }
 
 # 电池电压（整体电压）
@@ -111,6 +141,17 @@ BATTERY_VOLTAGE_MAPPINGS: dict[str, str] = {
     "Vbatt": "voltage_v",
     "cell_voltage": "voltage_v",
     "Cell_Voltage": "voltage_v",
+    "Ewe-Ece/V": "voltage_v",
+    "Ewe-Ece_V": "voltage_v",
+}
+
+CONTROL_MAPPINGS: dict[str, str] = {
+    "control/V": "control_voltage_v",
+    "control_V": "control_voltage_v",
+    "control/mA": "control_current_ma",
+    "control_mA": "control_current_ma",
+    "control/V/mA": "control_current_ma",
+    "control_V_mA": "control_current_ma",
 }
 
 # ============================================================================
@@ -131,8 +172,11 @@ CURRENT_MA_MAPPINGS: dict[str, str] = {
     "I/mA": "current_ma",
     "Current/mA": "current_ma",
     "control/V/mA": "current_ma",
+    "control_V_mA": "current_ma",
     "current_ma": "current_ma",
     "current/mA": "current_ma",
+    "|I|/A": "abs_current_a",
+    "|I|_A": "abs_current_a",
 }
 
 # 电流（微安）
@@ -152,6 +196,14 @@ CHARGE_MAPPINGS: dict[str, str] = {
     "charge": "q_mah",
     "Charge": "q_mah",
     "Q": "q_mah",
+    "dq/mA.h": "dq_mah",
+    "dq_mA.h": "dq_mah",
+    "dQ/mA.h": "dq_mah",
+    "dQ_mA.h": "dq_mah",
+    "(Q-Qo)/C": "charge_c",
+    "(Q-Qo)_C": "charge_c",
+    "dQ/C": "dq_c",
+    "dQ_C": "dq_c",
 }
 
 # 容量（毫安时）
@@ -159,11 +211,18 @@ CAPACITY_MAH_MAPPINGS: dict[str, str] = {
     "capacity": "capacity_mah",
     "Capacity": "capacity_mah",
     "(Q-Qo)/mA.h": "capacity_mah",
+    "(Q-Qo)_mA.h": "capacity_mah",
     "capacity_mah": "capacity_mah",
     "capacity/mA.h": "capacity_mah",
     "Capacity/mA.h": "capacity_mah",
     "Capacity/mAh": "capacity_mah",
     "Capacity_mA.h": "capacity_mah",
+    "Q charge/discharge/mA.h": "charge_discharge_capacity_mah",
+    "Q charge_discharge_mA.h": "charge_discharge_capacity_mah",
+    "Q charge/mA.h": "charge_capacity_mah",
+    "Q charge_mA.h": "charge_capacity_mah",
+    "Q discharge/mA.h": "discharge_capacity_mah",
+    "Q discharge_mA.h": "discharge_capacity_mah",
 }
 
 # 容量（微安时）
@@ -187,6 +246,39 @@ SPECIFIC_CAPACITY_MAPPINGS: dict[str, str] = {
     "SpeCap_cal_mA.h_g": "specific_capacity_cal_mah_g",
 }
 
+ENERGY_MAPPINGS: dict[str, str] = {
+    "Energy/uWh": "energy_uwh",
+    "Energy_uWh": "energy_uwh",
+    "SpeEnergy/mWh/g": "specific_energy_mwh_g",
+    "SpeEnergy_mWh_g": "specific_energy_mwh_g",
+    "Power/uW": "power_uw",
+    "Power_uW": "power_uw",
+}
+
+ENVIRONMENT_MAPPINGS: dict[str, str] = {
+    "Temperature/C": "temperature_c",
+    "Temperature_C": "temperature_c",
+    "Temperature/℃": "temperature_c",
+    "Humidity/%": "humidity_percent",
+    "Humidity_%": "humidity_percent",
+}
+
+SOURCE_MAPPINGS: dict[str, str] = {
+    "Mark1": "mark_1",
+    "Mark2": "mark_2",
+    "BatteryCode": "battery_code",
+    "DataFile": "data_file",
+    "TestName": "test_name",
+    "ProcessName": "process_name",
+    "Thicknessmm": "thickness_mm",
+    "ThicknessPressureg": "thickness_pressure_g",
+    "ThicknessTempC": "thickness_temperature_c",
+    "ChannelNumber": "channel_number",
+    "PageOffset": "page_offset",
+    "RecordOffset": "record_offset",
+    "PageValidRecords": "page_valid_records",
+}
+
 # ============================================================================
 # 电化学阻抗谱 (EIS) 列映射
 # ============================================================================
@@ -205,11 +297,11 @@ EIS_MAPPINGS: dict[str, str] = {
     "Z'": "re_z_ohm",
     "Z_real": "re_z_ohm",
     # 阻抗虚部（负值）
-    "-Im(Z)/Ohm": "-im_z_ohm",
-    "-Im(Z)_Ohm": "-im_z_ohm",
-    "-Im_Z_Ohm": "-im_z_ohm",
-    "Z''": "-im_z_ohm",
-    "Z_imag": "-im_z_ohm",
+    "-Im(Z)/Ohm": "neg_im_z_ohm",
+    "-Im(Z)_Ohm": "neg_im_z_ohm",
+    "-Im_Z_Ohm": "neg_im_z_ohm",
+    "Z''": "neg_im_z_ohm",
+    "Z_imag": "neg_im_z_ohm",
     # 阻抗模量
     "|Z|/Ohm": "z_mag_ohm",
     "|Z|_Ohm": "z_mag_ohm",
@@ -220,6 +312,10 @@ EIS_MAPPINGS: dict[str, str] = {
     "Phase_Z_deg": "phase_deg",
     "phase": "phase_deg",
     "Phase": "phase_deg",
+    "Cs/µF": "capacitance_series_uf",
+    "Cs_µF": "capacitance_series_uf",
+    "Cp/µF": "capacitance_parallel_uf",
+    "Cp_µF": "capacitance_parallel_uf",
 }
 
 # ============================================================================
@@ -239,17 +335,17 @@ DIFFERENTIAL_CAPACITY_MAPPINGS: dict[str, str] = {
 
 XRD_MAPPINGS: dict[str, str] = {
     # 2θ 角度
-    "2theta": "2theta_degree",
-    "2Theta": "2theta_degree",
-    "angle": "2theta_degree",
+    "2theta": "two_theta_deg",
+    "2Theta": "two_theta_deg",
+    "angle": "two_theta_deg",
     # 强度
     "intensity": "intensity",
     "Intensity": "intensity",
     "counts": "intensity",
     "Counts": "intensity",
     # d 间距
-    "d-spacing": "d-spacing_angstrom",
-    "d_spacing": "d-spacing_angstrom",
+    "d-spacing": "d_spacing_angstrom",
+    "d_spacing": "d_spacing_angstrom",
 }
 
 # ============================================================================
@@ -265,7 +361,7 @@ XPS_MAPPINGS: dict[str, str] = {
     "intensity": "intensity_cps",
     "Intensity": "intensity_cps",
     "counts": "intensity_cps",
-    "cps": "intensity/cps",
+    "cps": "intensity_cps",
 }
 
 # ============================================================================
@@ -274,17 +370,17 @@ XPS_MAPPINGS: dict[str, str] = {
 
 TGA_MAPPINGS: dict[str, str] = {
     # 温度
-    "temperature": "T/°C",
-    "Temperature": "T/°C",
-    "T": "T/°C",
+    "temperature": "temperature_c",
+    "Temperature": "temperature_c",
+    "T": "temperature_c",
     # 重量
-    "weight": "weight/%",
-    "Weight": "weight/%",
-    "mass": "weight/%",
+    "weight": "weight_percent",
+    "Weight": "weight_percent",
+    "mass": "weight_percent",
     # 时间
-    "time": "time/min",
-    "Time": "time/min",
-    "t": "time/min",
+    "time": "time_min",
+    "Time": "time_min",
+    "t": "time_min",
 }
 
 # ============================================================================
@@ -293,13 +389,14 @@ TGA_MAPPINGS: dict[str, str] = {
 
 XAS_MAPPINGS: dict[str, str] = {
     # 能量
-    "energy": "energy_eV",
-    "Energy": "energy_eV",
-    "energyc": "energy_eV",
-    "energy_eV": "energy_eV",
+    "energy": "energy_ev",
+    "Energy": "energy_ev",
+    "energyc": "energy_ev",
+    "energy_eV": "energy_ev",
+    "energy_ev": "energy_ev",
     # 吸收
-    "absorption": "absorption_au",
-    "Absorption": "absorption_au",
+    "absorption": "absorption",
+    "Absorption": "absorption",
 }
 
 # ============================================================================
@@ -308,7 +405,9 @@ XAS_MAPPINGS: dict[str, str] = {
 
 TXM_MAPPINGS: dict[str, str] = {
     # 能量
-    "energy": "energy_eV",
+    "energy": "energy_ev",
+    "energy_eV": "energy_ev",
+    "energy_ev": "energy_ev",
     # 位置
     "x": "x_um",
     "y": "y_um",
@@ -330,17 +429,22 @@ def get_echem_mappings() -> dict[str, str]:
     echem_map.update(CYCLE_MAPPINGS)
     echem_map.update(STEP_MAPPINGS)
     echem_map.update(RECORD_MAPPINGS)
+    echem_map.update(PROCESS_MAPPINGS)
     echem_map.update(WORKING_ELECTRODE_MAPPINGS)
     echem_map.update(COUNTER_ELECTRODE_MAPPINGS)
     echem_map.update(BATTERY_VOLTAGE_MAPPINGS)
+    echem_map.update(CONTROL_MAPPINGS)
     echem_map.update(CURRENT_MA_MAPPINGS)
     echem_map.update(CURRENT_UA_MAPPINGS)
     echem_map.update(CHARGE_MAPPINGS)
     echem_map.update(CAPACITY_MAH_MAPPINGS)
     echem_map.update(CAPACITY_UAH_MAPPINGS)
     echem_map.update(SPECIFIC_CAPACITY_MAPPINGS)
+    echem_map.update(ENERGY_MAPPINGS)
     echem_map.update(EIS_MAPPINGS)
     echem_map.update(DIFFERENTIAL_CAPACITY_MAPPINGS)
+    echem_map.update(ENVIRONMENT_MAPPINGS)
+    echem_map.update(SOURCE_MAPPINGS)
     return echem_map
 
 
@@ -400,6 +504,11 @@ ECHEM_PREFERRED_ORDER: list[str] = [
     "cycle_number",
     "step_number",
     "record",
+    "work_mode",
+    "step_in_process",
+    "step_duration_s",
+    "step_time_s",
+    "test_time_s",
     "ewe_v",
     "ece_v",
     "voltage_v",
@@ -410,13 +519,25 @@ ECHEM_PREFERRED_ORDER: list[str] = [
     "q_mah",
     "specific_capacity_mah_g",
     "specific_capacity_cal_mah_g",
+    "energy_uwh",
+    "specific_energy_mwh_g",
+    "power_uw",
     "frequency_hz",
     "re_z_ohm",
-    "-im_z_ohm",
+    "neg_im_z_ohm",
     "z_mag_ohm",
     "phase_deg",
     "dqdv_uah_v",
     "dvdq_v_uah",
+    "temperature_c",
+    "humidity_percent",
+    "mark_1",
+    "mark_2",
+    "battery_code",
+    "data_file",
+    "test_name",
+    "process_name",
+    "channel_number",
 ]
 
 
@@ -426,6 +547,7 @@ __all__ = [
     "CAPACITY_MAH_MAPPINGS",
     "CAPACITY_UAH_MAPPINGS",
     "CHARGE_MAPPINGS",
+    "CONTROL_MAPPINGS",
     "COUNTER_ELECTRODE_MAPPINGS",
     "CURRENT_MA_MAPPINGS",
     "CURRENT_UA_MAPPINGS",
@@ -433,8 +555,12 @@ __all__ = [
     "DIFFERENTIAL_CAPACITY_MAPPINGS",
     "ECHEM_PREFERRED_ORDER",
     "EIS_MAPPINGS",
+    "ENERGY_MAPPINGS",
+    "ENVIRONMENT_MAPPINGS",
+    "PROCESS_MAPPINGS",
     "RECORD_MAPPINGS",
     "RELATIVE_TIME_MAPPINGS",
+    "SOURCE_MAPPINGS",
     "SPECIFIC_CAPACITY_MAPPINGS",
     "STEP_MAPPINGS",
     "TGA_MAPPINGS",

@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# ruff: noqa: N999
 """Bio-Logic MPT file reader with metadata extraction using traitlets.
 
 Main classes:
@@ -21,6 +20,7 @@ import pandas as pd
 import xarray as xr
 
 from echemistpy.io.base_reader import BaseReader
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import merge_infos, sanitize_variable_names
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -254,6 +254,14 @@ class BiologicMPTReader(BaseReader):
     # --- Loader Metadata ---
     supports_directories: ClassVar[bool] = True
     instrument: ClassVar[str] = "biologic"
+    spec: ClassVar[ReaderSpec] = ReaderSpec(
+        name="biologic_mpt",
+        extensions=(".mpt",),
+        instruments=("biologic",),
+        techniques=("echem",),
+        supports_directory=True,
+        description="BioLogic EC-Lab ASCII MPT files",
+    )
 
     def __init__(self, filepath: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the BioLogic reader.
@@ -473,15 +481,8 @@ class BiologicMPTReader(BaseReader):
 
         for f in mpt_files:
             try:
-                raw_data, raw_info = self._load_single_file(f)
-                ds = cast(xr.Dataset, raw_data.data)
-
-                # Sanitize for DataTree (no '/' allowed in variable names)
-                ds = sanitize_variable_names(ds)
-
-                rel_path = f.relative_to(path).with_suffix("")
-                node_path = "/" + "/".join(rel_path.parts)
-                tree_dict[node_path] = ds
+                node_path, dataset, raw_info = self._load_directory_file(f, path)
+                tree_dict[node_path] = dataset
                 infos.append(raw_info)
             except Exception as e:
                 logger.warning("Failed to load %s: %s", f, e)
@@ -503,6 +504,14 @@ class BiologicMPTReader(BaseReader):
             instrument=self.instrument,
         )
         return RawData(data=tree), merged_info
+
+    def _load_directory_file(self, file_path: Path, root: Path) -> tuple[str, xr.Dataset, RawDataInfo]:
+        """Load one MPT file and return its DataTree node path, dataset, and metadata."""
+        raw_data, raw_info = self._load_single_file(file_path)
+        dataset = sanitize_variable_names(cast(xr.Dataset, raw_data.data))
+        rel_path = file_path.relative_to(root).with_suffix("")
+        node_path = "/" + "/".join(rel_path.parts)
+        return node_path, cast(xr.Dataset, dataset), raw_info
 
     def _detect_techniques(self, cleaned_metadata: dict, mpt_array: np.ndarray) -> list[str]:
         """Detect specific electrochemical techniques.
@@ -648,12 +657,3 @@ class BiologicMPTReader(BaseReader):
             cleaned.setdefault("active_material_mass", proc_info["Characteristic mass"])
 
         return {**cleaned, **metadata}
-
-    @staticmethod
-    def _get_file_extension() -> str:
-        """Get the file extension for this reader.
-
-        Returns:
-            File extension including the dot
-        """
-        return ".mpt"

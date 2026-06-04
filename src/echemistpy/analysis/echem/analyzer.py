@@ -11,9 +11,8 @@ import xarray as xr
 from traitlets import Bool, Float, Unicode
 from traitlets import List as TList
 
+from echemistpy.analysis.registry import TechniqueAnalyzer
 from echemistpy.io.structures import AnalysisData, AnalysisDataInfo, RawData
-
-from .registry import TechniqueAnalyzer
 
 
 class GalvanostaticAnalyzer(TechniqueAnalyzer):

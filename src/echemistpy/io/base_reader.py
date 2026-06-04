@@ -20,7 +20,7 @@ import xarray as xr
 from traitlets import HasTraits, Unicode
 from traitlets import List as TList
 
-from echemistpy.io.plugin_manager import get_plugin_manager
+from echemistpy.io.contracts import ReaderSpec
 from echemistpy.io.reader_utils import merge_infos, sanitize_variable_names
 from echemistpy.io.structures import RawData, RawDataInfo
 
@@ -137,29 +137,20 @@ class BaseReader(HasTraits):
             FileNotFoundError: 如果未找到支持的文件
             RuntimeError: 如果所有文件加载失败
         """
-        # 获取此读取器的文件扩展名
-        ext = self._get_file_extension()
-        files = sorted(path.rglob(f"*{ext}"))
+        extensions = self._extensions()
+        files = sorted({file for ext in extensions for file in path.rglob(f"*{ext}")})
 
         if not files:
-            raise FileNotFoundError(f"No *{ext} files found in {path}")
+            patterns = ", ".join(f"*{ext}" for ext in extensions)
+            raise FileNotFoundError(f"No files matching {patterns} found in {path}")
 
         tree_dict: dict[str, Any] = {}
         infos: list[RawDataInfo] = []
 
         for f in files:
             try:
-                raw_data, raw_info = self._load_single_file(f, **kwargs)
-                ds = raw_data.data
-
-                # 为 DataTree 清理（变量名中不允许 '/'）
-                ds = sanitize_variable_names(ds)
-
-                # 构建节点路径
-                rel_path = f.relative_to(path).with_suffix("")
-                node_path = "/" + "/".join(rel_path.parts)
-
-                tree_dict[node_path] = ds
+                node_path, dataset, raw_info = self._load_directory_file(f, path, **kwargs)
+                tree_dict[node_path] = dataset
                 infos.append(raw_info)
             except FileNotFoundError as e:
                 logger.error("文件不存在: %s - %s", f, e)
@@ -176,7 +167,8 @@ class BaseReader(HasTraits):
                 logger.exception("未预期的错误加载 %s: %s", f, e)
 
         if not tree_dict:
-            raise RuntimeError(f"Failed to load any *{ext} files from {path}")
+            patterns = ", ".join(f"*{ext}" for ext in extensions)
+            raise RuntimeError(f"Failed to load any files matching {patterns} from {path}")
 
         # 创建 DataTree
         tree = xr.DataTree.from_dict(tree_dict, name=path.name)
@@ -196,36 +188,27 @@ class BaseReader(HasTraits):
 
         return RawData(data=tree), merged_info
 
-    def _get_file_extension(self) -> str:
-        """获取此读取器支持的文件扩展名。
+    def _load_directory_file(self, file_path: Path, root: Path, **kwargs: Any) -> tuple[str, xr.Dataset, RawDataInfo]:
+        """Load one file and return its DataTree node path, dataset, and metadata."""
+        raw_data, raw_info = self._load_single_file(file_path, **kwargs)
+        if not isinstance(raw_data.data, xr.Dataset):
+            raise ValueError(f"{self.__class__.__name__} directory items must load as xarray.Dataset")
 
-        通过从 plugin_manager 查询已注册的扩展名，避免硬编码。
+        dataset = sanitize_variable_names(raw_data.data)
+        if not isinstance(dataset, xr.Dataset):
+            raise ValueError(f"{self.__class__.__name__} directory items must sanitize to xarray.Dataset")
 
-        Returns:
-            文件扩展名（包含点号，如 '.mpt'）
-        """
-        pm = get_plugin_manager()
+        rel_path = file_path.relative_to(root).with_suffix("")
+        node_path = "/" + "/".join(rel_path.parts)
+        return node_path, dataset, raw_info
 
-        # 查找与当前 instrument 关联的所有扩展名
-        for ext in pm.list_supported_extensions():
-            loaders = pm.loaders.get(ext, [])
-            for loader in loaders:
-                # 检查是否是当前类
-                if loader is self.__class__:
-                    return ext
-
-        # 尝试通过 instrument 名称查找
-        # 这是一种启发式方法，因为可能多个扩展名对应同一个 instrument
-        # 但在目录加载时，我们只需要一个扩展名来 glob
-        if self.instrument and self.instrument != "unknown":
-            inst_lower = self.instrument.lower()
-            for ext in pm.list_supported_extensions():
-                instruments = [i.lower() for i in pm.get_loader_instruments(ext)]
-                if inst_lower in instruments:
-                    return ext
-
-        # 默认返回通配符
-        return ".*"
+    @classmethod
+    def _extensions(cls) -> tuple[str, ...]:
+        """Return declared file extensions for this reader."""
+        spec = getattr(cls, "spec", None)
+        if isinstance(spec, ReaderSpec) and spec.extensions:
+            return spec.extensions
+        raise ValueError(f"{cls.__name__} must declare ReaderSpec.extensions")
 
     def _create_raw_info(
         self,
