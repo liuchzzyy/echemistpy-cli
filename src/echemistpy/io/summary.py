@@ -8,9 +8,9 @@ from typing import Any
 
 import xarray as xr
 
+from echemistpy.data.models import RawData, RawDataInfo
 from echemistpy.data.schema import RAW_SCHEMA
 from echemistpy.io.loaders import load
-from echemistpy.io.structures import RawData, RawDataInfo
 
 
 @dataclass(frozen=True)

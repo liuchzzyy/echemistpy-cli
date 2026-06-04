@@ -14,10 +14,10 @@ import h5py
 import numpy as np
 import xarray as xr
 
+from echemistpy.data.models import RawData, RawDataInfo
+from echemistpy.data.utils import apply_standard_attrs_txm
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
-from echemistpy.io.reader_utils import apply_standard_attrs_txm
-from echemistpy.io.structures import RawData, RawDataInfo
 
 logger = logging.getLogger(__name__)
 

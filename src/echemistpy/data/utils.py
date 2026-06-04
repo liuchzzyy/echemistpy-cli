@@ -1,7 +1,6 @@
-"""数据读取器的实用工具函数。
+"""Shared data utility functions.
 
-本模块包含跨不同文件读取器使用的通用辅助函数，
-用于避免代码重复。
+本模块包含数据层通用辅助函数，用于 xarray 名称清理、元数据合并和标准属性写入。
 
 主要功能：
 - 变量名清理：为 DataTree 兼容性清理变量名（替换 '/'）
@@ -17,7 +16,7 @@ from typing import Any
 
 import xarray as xr
 
-from echemistpy.io.structures import RawDataInfo
+from echemistpy.data.models import RawDataInfo
 
 logger = logging.getLogger(__name__)
 

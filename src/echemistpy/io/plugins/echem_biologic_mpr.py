@@ -10,9 +10,9 @@ import pandas as pd
 import xarray as xr
 from galvani import BioLogic
 
+from echemistpy.data.models import RawData, RawDataInfo
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
-from echemistpy.io.structures import RawData, RawDataInfo
 
 BIOLOGIC_STEP_TIME_COLUMN_ID = 182
 

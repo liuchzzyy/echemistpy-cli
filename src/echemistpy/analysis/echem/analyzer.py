@@ -12,7 +12,7 @@ from traitlets import Bool, Float, Unicode
 from traitlets import List as TList
 
 from echemistpy.analysis.registry import TechniqueAnalyzer
-from echemistpy.io.structures import AnalysisData, AnalysisDataInfo, RawData
+from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData
 
 
 class GalvanostaticAnalyzer(TechniqueAnalyzer):

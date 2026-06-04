@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from echemistpy.io import load
-from echemistpy.io.structures import AnalysisData, AnalysisDataInfo
+from echemistpy.data.models import AnalysisData, AnalysisDataInfo
 
 from .registry import TechniqueRegistry, create_default_registry
 

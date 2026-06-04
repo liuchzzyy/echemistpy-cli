@@ -1,4 +1,4 @@
-"""Typer application for the echem command."""
+"""Typer application for the echemistpy command."""
 
 from __future__ import annotations
 
@@ -7,14 +7,32 @@ import typer
 from echemistpy.cli.commands import convert, doctor, formats, inspect_data
 
 app = typer.Typer(no_args_is_help=True)
-app.command("formats")(formats)
 app.command("doctor")(doctor)
-app.command("inspect")(inspect_data)
-app.command("convert")(convert)
+
+
+def _formats_command(domain: str):
+    def command() -> None:
+        formats(domain=domain)
+
+    command.__name__ = f"{domain}_formats"
+    command.__doc__ = f"Print supported {domain.upper()} reader formats."
+    return command
+
+
+def _domain_app(domain: str) -> typer.Typer:
+    domain_app = typer.Typer(no_args_is_help=True)
+    domain_app.command("formats")(_formats_command(domain))
+    domain_app.command("inspect")(inspect_data)
+    domain_app.command("convert")(convert)
+    return domain_app
+
+
+for _domain in ("echem", "xas", "xrd", "txm"):
+    app.add_typer(_domain_app(_domain), name=_domain)
 
 
 def main() -> None:
-    """Run the echem CLI."""
+    """Run the echemistpy CLI."""
     app()
 
 

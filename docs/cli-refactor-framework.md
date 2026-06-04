@@ -166,58 +166,75 @@ workflow 负责编排多步任务
 ```text
 src/echemistpy/
   __init__.py
-  io/
+  cli/
     __init__.py
-    AGENTS.md
-    structures.py
-    base_reader.py
-    plugin_manager.py
-    loaders.py
-    standardizer.py
-    column_mappings.py
-    reader_utils.py
-    saver.py
-    plugins/
+    app.py
+    main.py
+    commands/
       __init__.py
-      echem_biologic_mpt.py
-      echem_biologic_mpr.py
-      echem_lanhe_xlsx.py
-      echem_lanhe_ccs.py
-      XAS_CLAESS.py
-      TXM_MISTRAL.py
-      XRD_MSPD.py
+      convert_data.py
+      doctor.py
+      formats.py
+      inspect_data.py
+  data/
+    __init__.py
+    column_mappings.py
+    models.py
+    schema.py
+    standardize.py
+    storage.py
+    utils.py
   analysis/
-    AGENTS.md
+    __init__.py
     registry.py
     pipeline.py
+    echem/__init__.py
     echem/analyzer.py
+    stxm/__init__.py
     stxm/analyzer.py
+    xas/__init__.py
     xas/analyzer.py
     xas/processing.py
     xas/fitting.py
     xas/plotting.py
     xas/elements.py
+  io/
+    __init__.py
+    base_reader.py
+    contracts.py
+    conversion.py
+    loaders.py
+    plugin_manager.py
+    summary.py
+    plugins/
+      __init__.py
+      echem_biologic_mpr.py
+      echem_biologic_mpt.py
+      echem_lanhe_ccs.py
+      echem_lanhe_xlsx.py
+      TXM_MISTRAL.py
+      XAS_CLAESS.py
+      XRD_MSPD.py
 Samples/
 docs/
+tests/
 ```
 
 注意：当前仓库没有 `scripts/workflow_operando.py`。旧文档里对该脚本的描述已经过时。
 
 ### 3.2 当前主要问题
 
-- 没有 `[project.scripts]`，也没有 `src/echemistpy/cli`。
-- `io.structures` 实际是数据模型层，应迁到 `data.models`。
-- `io.standardizer` 和 `io.column_mappings` 实际是数据契约/转换层，应迁到 `data.schema` 与 `data.standardize`。
-- `io.saver` 一部分是对外导出，一部分是内部数据存储，应拆成 `io.writers` 与 `data.storage`。
+- 已有 `[project.scripts] echemistpy = "echemistpy.cli.app:main"`，并已实现 `echem/xas/xrd/txm` 领域子命令下的 `formats`, `inspect`, `convert`，以及顶层 `doctor`。
+- `data` 层已经成为真实实现层：`models`, `schema`, `column_mappings`, `standardize`, `storage`, `utils` 都在 `data` 下。
+- `io` 层不再保留 `structures`, `standardizer`, `saver`, `column_mappings`, `reader_utils` 兼容 re-export；旧路径应视为内部重构中删除。
+- 当前依赖方向应保持为 `io -> data`、`analysis -> data`、`cli -> io/data`，不允许 `data -> io`。
 - `analysis.xas.plotting` 应迁到 `plot.xas`，避免分析模块承担绘图接口。
-- `analysis/echem`, `analysis/stxm`, `analysis/xas` 没有清晰包导出，`create_default_registry()` 依赖的导入会失败。
-- `analysis/echem/analyzer.py` 使用了错误的相对导入：`from .registry import TechniqueAnalyzer`。
-- `analysis/stxm/analyzer.py` 引用旧路径 `echemistpy.processing.analyzers.registry`。
-- XAS 标准变量名不一致：标准化倾向 `energy_eV/absorption_au`，XAS analyzer 要求 `energyc/absorption`。
+- `analysis/echem`, `analysis/stxm`, `analysis/xas` 已有包导出，分析模块已改为从 `data.models` 消费数据容器。
+- XAS/STXM 已开始统一到 `energy_ev/absorption/optical_density` 等标准名，但更完整的 schema validation 尚未实现。
 - reader 插件仍依赖插件目录扫描；能力声明已改为 `ReaderSpec`，后续可迁到 entry points。
 - 目录聚合逻辑放在 `BaseReader`，会让所有 reader 被迫承担目录组织职责。
 - 核心依赖包含 `xraylarch`, `umap-learn`, `numba`, `scikit-image` 等重型包，基础 CLI 用户不应默认安装。
-- 仓库没有 `tests/`，当前 `.venv` 也未证明 pytest 可用。
+- `tests/` 已覆盖 CLI、reader spec、公开 data API 和电化学样例；完整测试可通过，但样例测试仍偏慢，且 traitlets 初始化有 deprecation warning。
 
 ## 4. 目标架构
 
@@ -495,7 +512,7 @@ provenance:
 ```bash
 echem index add ./data --instrument biologic --store ./echem-index.duckdb
 echem index query --sample MnO2 --technique gcd
-echem convert data.mpt --out raw.zarr
+echemistpy echem convert data.mpt --out raw.zarr
 ```
 
 ## 6. I/O 层设计
@@ -649,9 +666,9 @@ fig = plot_data(result, kind="xas-normalized")
 CLI：
 
 ```bash
-echem plot data.mpt --kind echem-cycle --out cycle.png
-echem plot xas.nc --kind xas-normalized --out xas.svg
-echem plot txm.zarr --kind txm-map --variable optical_density --out map.png
+echemistpy echem plot data.mpt --kind echem-cycle --out cycle.png
+echemistpy xas plot xas.nc --kind xas-normalized --out xas.svg
+echemistpy txm plot txm.zarr --kind txm-map --variable optical_density --out map.png
 ```
 
 ### 8.3 绘图边界
@@ -678,7 +695,7 @@ plot 不应该：
 
 ```toml
 [project.scripts]
-echem = "echemistpy.cli.app:app"
+echemistpy = "echemistpy.cli.app:main"
 ```
 
 使用 Typer：
@@ -691,23 +708,44 @@ cli = ["typer>=0.12", "rich>=13"]
 ### 9.2 命令树
 
 ```text
-echem
-  formats
-  inspect PATH
-  convert PATH
-  analyze PATH
-  plot PATH
+echemistpy
+  doctor
+  echem
+    formats
+    inspect PATH
+    convert PATH
+    analyze PATH
+    plot PATH
+  xas
+    formats
+    inspect PATH
+    convert PATH
+    analyze PATH
+    plot PATH
+  xrd
+    formats
+    inspect PATH
+    convert PATH
+    analyze PATH
+    plot PATH
+  txm
+    formats
+    inspect PATH
+    convert PATH
+    analyze PATH
+    plot PATH
   index add PATH
   index query
   workflow NAME PATH
-  doctor
 ```
+
+`echem` 只承载电化学命令，不能列出 XAS/XRD/TXM reader。XAS、XRD、TXM 等材料表征格式必须通过对应领域子命令访问，例如 `echemistpy xas formats`。
 
 ### 9.3 命令职责
 
 `formats`
 
-- 列出 reader/writer/analyzer/plotter registry。
+- 列出当前领域的 reader/writer/analyzer/plotter registry。
 - 输出 extension、instrument、technique、是否支持目录、是否支持写出。
 
 `inspect PATH`
@@ -763,7 +801,7 @@ Warnings: 1
 机器可读：
 
 ```bash
-echem inspect data.mpt --json
+echemistpy echem inspect data.mpt --json
 ```
 
 错误应可操作：
@@ -875,18 +913,23 @@ pip install echemistpy-cli[all]
 
 ### 阶段 1：建立 data 层
 
-目标：把数据契约从 `io` 拆出来。
+目标：把数据契约从 `io` 拆出来，并让 `data` 成为唯一数据实现层。
 
 工作：
 
 - 新增 `echemistpy/data`。
-- 迁移或包装 `io.structures` 到 `data.models`。
-- 迁移 `standardizer.py` 和 `column_mappings.py` 到 `data.standardize` 与 `data.schema`。
+- 物理迁移 `io.structures` 到 `data.models`。
+- 物理迁移 `io.standardizer` 到 `data.standardize`。
+- 物理迁移 `io.column_mappings` 到 `data.column_mappings`，标准名仍由 `data.schema` 统一声明。
+- 物理迁移 `io.saver` 到 `data.storage`。
+- 物理迁移 `io.reader_utils` 中与 xarray 名称、metadata 合并、标准 attrs 相关的通用逻辑到 `data.utils`。
 - 新增标准名和单位表。
-- 保留旧 import 的兼容层。
+- 删除旧 `io.structures`, `io.standardizer`, `io.saver`, `io.column_mappings`, `io.reader_utils` 文件，不保留兼容 re-export。
 
 验收：
 
+- `src/echemistpy/data` 内没有任何 `echemistpy.io` import。
+- `io` reader 和 `analysis` analyzer 直接从 `data.models` 消费数据容器。
 - reader 输出可以通过 `data.validation.validate_schema()`。
 - analyzer required variables 与 schema 一致。
 
@@ -939,25 +982,27 @@ pip install echemistpy-cli[all]
 验收：
 
 - `plot_data(bundle, kind=...)` 返回 matplotlib figure。
-- `echem plot ... --out figure.png` 可运行。
+- `echemistpy echem plot ... --out figure.png` 可运行。
 
 ### 阶段 5：新增 CLI 薄壳
 
-目标：最小 CLI 可发布。
+目标：最小 CLI 可发布，CLI 只编排 `io` 和 `data` 服务。
 
 工作：
 
 - 新增 `echemistpy/cli/app.py` 和 `commands/*`。
-- 添加 `[project.scripts] echem = ...`。
-- 实现 `formats`, `inspect`, `convert`, `doctor`。
+- 添加 `[project.scripts] echemistpy = "echemistpy.cli.app:main"`。
+- 实现 `echemistpy echem formats/inspect/convert`，并为 `xas/xrd/txm` 提供对应领域入口。
+- 实现顶层 `doctor`。
 - 再实现 `analyze`, `plot`, `index`, `workflow`。
 
 验收：
 
-- `echem formats` 可运行。
-- `echem inspect Samples/...` 可运行。
-- `echem convert Samples/... --out raw.nc` 可运行。
-- `echem doctor` 能报告缺失 optional dependencies。
+- `echemistpy echem formats` 只列出电化学 reader。
+- `echemistpy xas formats`, `echemistpy xrd formats`, `echemistpy txm formats` 分别列出对应领域 reader。
+- `echemistpy echem inspect Samples/...` 可运行。
+- `echemistpy echem convert Samples/... --out raw.nc` 可运行。
+- `echemistpy doctor` 能报告缺失 optional dependencies。
 
 ### 阶段 6：存储、索引和 workflow
 
@@ -980,12 +1025,13 @@ pip install echemistpy-cli[all]
 
 第一批不要大改科学算法，目标是先把库变成“可导入、可检查、可验证”的 CLI 库基础。
 
-1. 新增 `data` 包，迁移/兼容 `io.structures`。
-2. 新增 `data.schema`，统一变量名，先修 XAS `energy_ev/absorption` 冲突。
-3. 补齐 `analysis` 子包导出并修复当前错误导入。
-4. 新增 `ReaderSpec`，先为现有 reader 声明 spec，不重写 reader 内部解析。
-5. 新增 `cli/app.py`，只实现 `formats` 和 `doctor`。
-6. 新增 `tests/test_imports.py`, `tests/test_formats.py`, `tests/test_analysis_registry.py`。
+1. 新增并清理 `data` 包，物理迁移模型、标准化、列名映射、存储和通用工具，不保留 `io` 兼容层。
+2. 收紧 `io` 包，只保留 reader contracts、registry、load/inspect/convert 和插件，不从 `io.__init__` 暴露 data 容器或 storage。
+3. 新增 `data.schema`，统一变量名，先修 XAS/STXM `energy_ev/absorption/optical_density` 冲突。
+4. 补齐 `analysis` 子包导出并让 analyzer 直接依赖 `data.models`。
+5. 新增 `ReaderSpec`，先为现有 reader 声明 spec，不重写 reader 内部解析。
+6. 新增 `cli/app.py`，实现 `formats`, `inspect`, `convert`, `doctor`。
+7. 新增 `tests/test_cli.py`, `tests/test_reader_specs.py`, `tests/test_public_api.py`, `tests/test_echem_samples.py`。
 
 这样改动足够小，但方向已经对齐最终结构。
 

@@ -19,7 +19,7 @@ from sklearn.mixture import GaussianMixture
 from traitlets import Bool, Dict, Float, Int, List, Unicode
 
 from echemistpy.analysis.registry import TechniqueAnalyzer
-from echemistpy.io.structures import AnalysisData, AnalysisDataInfo, RawData
+from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from traitlets import HasTraits, Instance, MetaHasTraits, Unicode
 from traitlets import List as TList
 
-from echemistpy.io.structures import AnalysisData, AnalysisDataInfo, RawData, RawDataInfo
+from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData, RawDataInfo
 
 
 class ABCMetaHasTraits(ABCMeta, MetaHasTraits):

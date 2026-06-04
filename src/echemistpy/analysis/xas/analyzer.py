@@ -11,7 +11,7 @@ from traitlets import Dict, Unicode
 
 from echemistpy.analysis.registry import TechniqueAnalyzer
 from echemistpy.analysis.xas.processing import find_e0_by_derivative
-from echemistpy.io.structures import AnalysisData, AnalysisDataInfo, RawData
+from echemistpy.data.models import AnalysisData, AnalysisDataInfo, RawData
 
 try:
     from larch import Group  # type: ignore

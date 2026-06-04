@@ -17,10 +17,10 @@ from typing import Any, ClassVar
 import pandas as pd
 import xarray as xr
 
+from echemistpy.data.models import RawData, RawDataInfo
+from echemistpy.data.utils import sanitize_variable_names
 from echemistpy.io.base_reader import BaseReader
 from echemistpy.io.contracts import ReaderSpec
-from echemistpy.io.reader_utils import sanitize_variable_names
-from echemistpy.io.structures import RawData, RawDataInfo
 
 logger = logging.getLogger(__name__)
 

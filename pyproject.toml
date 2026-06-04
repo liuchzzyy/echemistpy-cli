@@ -72,7 +72,7 @@ repository = "https://github.com/liuchzzyy/echemistpy-cli"
 issues = "https://github.com/liuchzzyy/echemistpy-cli/issues"
 
 [project.scripts]
-echem = "echemistpy.cli.app:main"
+echemistpy = "echemistpy.cli.app:main"
 
 [tool.setuptools]
 include-package-data = true

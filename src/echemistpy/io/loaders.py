@@ -27,15 +27,15 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from echemistpy.io.contracts import ReaderSpec
-from echemistpy.io.plugin_manager import get_plugin_manager
-from echemistpy.io.standardizer import (
-    standardize_names,
-)
-from echemistpy.io.structures import (
+from echemistpy.data.models import (
     RawData,
     RawDataInfo,
 )
+from echemistpy.data.standardize import (
+    standardize_names,
+)
+from echemistpy.io.contracts import ReaderSpec
+from echemistpy.io.plugin_manager import get_plugin_manager
 
 if TYPE_CHECKING:
     pass
